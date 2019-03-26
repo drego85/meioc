@@ -40,7 +40,7 @@ output:
             "Sender": "",
             "Subject": "Phishing Mail",
             "X-Originating-IP": "",
-            "Attachments": [
+            "attachments": [
                 {
                     "0": "malware.xls"
                 }
