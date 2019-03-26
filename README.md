@@ -9,7 +9,7 @@ Meioc allows you to extract the following information from an e-mail, in JSON fo
 * Header Field: Subject
 * Header Field: X-Originating-IP
 * Relay Full
-* Relay IP (Only the IPs involved with the possibility of excluding private IPs.)
+* Relay IP (Only the IPs involved with the possibility of excluding private IPs)
 * Urls
 * Domains
 
@@ -22,12 +22,13 @@ The software is currently distributed in beta version, every collaboration is we
 
 ### Requirements
 
-pip3 install requirementes.txt
+pip3 install -r requirementes.txt
 
 ### Example
 
-$ python3 meioc.py email.eml -x
+$ python3 meioc.py -f email.eml -x
 
+output:
 ```json
 {
     "data": [
