@@ -26,7 +26,7 @@ pip3 install -r requirementes.txt
 
 ### Example
 
-$ python3 meioc.py -f email.eml -x
+$ python3 meioc.py --exclude-private-ip -f email.eml 
 
 output:
 ```json
