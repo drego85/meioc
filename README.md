@@ -40,6 +40,11 @@ output:
             "Sender": "",
             "Subject": "Phishing Mail",
             "X-Originating-IP": "",
+            "Attachments": [
+                {
+                    "0": "malware.xls"
+                }
+            ],
             "relay_full": [
                 {
                     "0": "localhost.localdomain (unknown [AAA.BBB.CCC.DDD])",

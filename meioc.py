@@ -25,6 +25,7 @@ def email_analysis(filename, exclude_private_ip):
     domainList = []
     hopList = []
     hopListIP = []
+    attachList = []
     data = {}
     data["data"] = []
 
@@ -32,11 +33,14 @@ def email_analysis(filename, exclude_private_ip):
         msg = BytesParser(policy=policy.default).parse(fp)
 
     if msg:
-        # Identify each url reported in the eMail body
+        # Identify each url or attachment reported in the eMail body
         for part in msg.walk():
             if part.get_content_type() == "text/plain" or part.get_content_type() == "text/html":
                 extractor = URLExtract()
                 urlList.extend(extractor.find_urls(part.get_content()))
+            else:
+                if part.get_filename():
+                    attachList.append(part.get_filename())
 
         # Identify each domain reported in the eMail body
         for url in urlList:
@@ -80,10 +84,11 @@ def email_analysis(filename, exclude_private_ip):
             "Sender": mail_sender,
             "Subject": mail_subject,
             "X-Originating-IP": mail_xorigip,
+            "attachments": [],
             "relay_full": [],
             "relay_ip": [],
-            "url": [],
-            "domain": []
+            "urls": [],
+            "domains": []
         })
 
         # Identify each relay
@@ -119,6 +124,10 @@ def email_analysis(filename, exclude_private_ip):
 
                     if hop[0]:
                         hopList.append(hop[0])
+
+        if attachList:
+            data["data"][0]["attachments"].append(dict(zip(range(len(attachList)), attachList)))
+
         if hopList:
             data["data"][0]["relay_full"].append(dict(zip(range(len(hopList)), hopList)))
 
@@ -126,8 +135,8 @@ def email_analysis(filename, exclude_private_ip):
             data["data"][0]["relay_ip"].append(dict(zip(range(len(hopListIP)), hopListIP)))
 
         if urlList:
-            data["data"][0]["url"].append(dict(zip(range(len(urlList)), urlList)))
-            data["data"][0]["domain"].append(dict(zip(range(len(domainList)), domainList)))
+            data["data"][0]["urls"].append(dict(zip(range(len(urlList)), urlList)))
+            data["data"][0]["domains"].append(dict(zip(range(len(domainList)), domainList)))
 
         print(json.dumps(data, indent=4))
 
