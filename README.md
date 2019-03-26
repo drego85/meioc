@@ -19,6 +19,7 @@ The software is currently distributed in beta version, every collaboration is we
 
 - [ ] Scan multiple eMail (directory input)
 - [ ] Whitelist
+- [ ] Support .msg files
 
 ### Requirements
 ```
