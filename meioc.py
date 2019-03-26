@@ -98,8 +98,7 @@ def email_analysis(filename, exclude_private_ip):
             for line in received:
                 hops = re.findall("from\s+(.*?)\s+by(.*?)(?:(?:with|via)(.*?)(?:id|$)|id|$)", line, re.DOTALL | re.X)
                 for hop in hops:
-
-                    ipv4_address = re.findall(r"[0-9]+(?:\.[0-9]+){3}", hop[0], re.DOTALL | re.X)
+                    ipv4_address = re.findall(r"(?:^|\b(?<!\.))(?:1?\d?\d|2[0-4]\d|25[0-5])(?:\.(?:1?\d?\d|2[0-4]\d|25[0-5])){3}(?=$|[^\w.])", hop[0], re.DOTALL | re.X)
 
                     # https://gist.github.com/dfee/6ed3a4b05cfe7a6faf40a2102408d5d8
                     ipv6_address = re.findall(
