@@ -21,13 +21,14 @@ The software is currently distributed in beta version, every collaboration is we
 - [ ] Whitelist
 
 ### Requirements
-
+```
 pip3 install -r requirementes.txt
+```
 
 ### Example
-
+```
 $ python3 meioc.py --exclude-private-ip -f email.eml 
-
+```
 output:
 ```json
 {
