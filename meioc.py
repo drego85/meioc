@@ -58,7 +58,7 @@ def email_analysis(filename, exclude_private_ip):
         # Sender Mail: spoof@example.com
 
         if msg["From"]:
-            mail_from = re.findall("^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$", msg["From"], re.IGNORECASE)
+            mail_from = re.findall("^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$", msg["From"])
             mail_from = mail_from[-1]
         else:
             mail_from = ""
