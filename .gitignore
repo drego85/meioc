@@ -105,5 +105,6 @@ venv.bak/
 .idea
 .tld_set
 
-# Personal test directoru
+# Personal file
 sourceemail/
+NOTE.md
