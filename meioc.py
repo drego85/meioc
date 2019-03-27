@@ -10,10 +10,12 @@ import os
 import re
 import sys
 import json
+import hashlib
 import argparse
 import ipaddress
 import tldextract
 from email import policy
+from bs4 import BeautifulSoup
 from email.parser import BytesParser
 
 tldcache = tldextract.TLDExtract(cache_file="./.tld_set")
@@ -34,15 +36,20 @@ def email_analysis(filename, exclude_private_ip):
     if msg:
         # Identify each url or attachment reported in the eMail body
         for part in msg.walk():
-            if part.get_content_type() == "text/plain" or part.get_content_type() == "text/html":
-
+            if part.get_content_type() == "text/plain":
                 # https://gist.github.com/dperini/729294
                 urlList.extend(re.findall(
                     "(?:(?:(?:https?|ftp):)?\/\/)(?:\S+(?::\S*)?@)?(?:(?!(?:10|127)(?:\.\d{1,3}){3})(?!(?:169\.254|192\.168)(?:\.\d{1,3}){2})(?!172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff_-]{0,62})?[a-z0-9\u00a1-\uffff]\.)+(?:[a-z\u00a1-\uffff]{2,}\.?))(?::\d{2,5})?(?:[/?#]\S*)?",
                     part.get_content(), re.UNICODE | re.IGNORECASE | re.MULTILINE))
-            else:
-                if part.get_filename():
-                    attachList.append(part.get_filename())
+
+            if part.get_content_type() == "text/html":
+                soup = BeautifulSoup(part.get_content(), "html.parser")
+                tags = soup.find_all("a", href=True)
+                for url in tags:
+                    urlList.append(url.get("href"))
+
+            if part.get_filename():
+                attachList.append(part.get_filename())
 
         # Identify each domain reported in the eMail body
         for url in urlList:
@@ -63,6 +70,8 @@ def email_analysis(filename, exclude_private_ip):
             mail_from = re.findall("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["From"], re.IGNORECASE)
             if mail_from:
                 mail_from = mail_from[-1]
+            else:
+                mail_from = ""
         else:
             mail_from = ""
 
