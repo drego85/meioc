@@ -42,7 +42,16 @@ output:
             "X-Originating-IP": "",
             "attachments": [
                 {
-                    "0": "malware.xls"
+                    "filename": "malware.zip",
+                    "MD5": "35b213ddac9526568f8e586e85047c86",
+                    "SHA1": "e11a9536eb73b5bbcba4648939c662a8b759e0bc",
+                    "SHA256": "eb295b107ce320416c7d263f00854ce2ae0bef5e06c18e1bbeb27ec69feb265e"
+                },
+                {
+                    "filename": "image.jpg",
+                    "MD5": "e1a566bc4ee0fa5f00ca386050d9569f",
+                    "SHA1": "c6864c7a208d331e94c90f33c0626badce4e9a8e",
+                    "SHA256": "bd91ba7049770215ee6628e283a9ebf4b8d185652ab3cdf3d56beab619b1abc4"
                 }
             ],
             "relay_full": [

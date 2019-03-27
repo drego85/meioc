@@ -26,7 +26,6 @@ def email_analysis(filename, exclude_private_ip):
     domainList = []
     hopList = []
     hopListIP = []
-    attachList = []
     data = {}
     data["data"] = []
 
@@ -34,33 +33,6 @@ def email_analysis(filename, exclude_private_ip):
         msg = BytesParser(policy=policy.default).parse(fp)
 
     if msg:
-        # Identify each url or attachment reported in the eMail body
-        for part in msg.walk():
-            if part.get_content_type() == "text/plain":
-                # https://gist.github.com/dperini/729294
-                urlList.extend(re.findall(
-                    "(?:(?:(?:https?|ftp):)?\/\/)(?:\S+(?::\S*)?@)?(?:(?!(?:10|127)(?:\.\d{1,3}){3})(?!(?:169\.254|192\.168)(?:\.\d{1,3}){2})(?!172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff_-]{0,62})?[a-z0-9\u00a1-\uffff]\.)+(?:[a-z\u00a1-\uffff]{2,}\.?))(?::\d{2,5})?(?:[/?#]\S*)?",
-                    part.get_content(), re.UNICODE | re.IGNORECASE | re.MULTILINE))
-
-            if part.get_content_type() == "text/html":
-                soup = BeautifulSoup(part.get_content(), "html.parser")
-                tags = soup.find_all("a", href=True)
-                for url in tags:
-                    urlList.append(url.get("href"))
-
-            if part.get_filename():
-                attachList.append(part.get_filename())
-
-        # Identify each domain reported in the eMail body
-        for url in urlList:
-            analyzeddomain = tldcache(url).registered_domain
-            if analyzeddomain:
-                domainList.append(analyzeddomain)
-
-        # Remove Duplicate
-        urlList = list(set(urlList))
-        domainList = list(set(domainList))
-
         # A sender obfuscation technique involves entering two e-mails. Only the last one is the real one. Example:
         #
         # Sender Name: Mario Rossi <rossi.mario@example.com>
@@ -103,12 +75,46 @@ def email_analysis(filename, exclude_private_ip):
             "domains": []
         })
 
+        # Identify each url or attachment reported in the eMail body
+        for part in msg.walk():
+            if part.get_content_type() == "text/plain":
+                # https://gist.github.com/dperini/729294
+                urlList.extend(re.findall(
+                    "(?:(?:(?:https?|ftp):)?\/\/)(?:\S+(?::\S*)?@)?(?:(?!(?:10|127)(?:\.\d{1,3}){3})(?!(?:169\.254|192\.168)(?:\.\d{1,3}){2})(?!172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff_-]{0,62})?[a-z0-9\u00a1-\uffff]\.)+(?:[a-z\u00a1-\uffff]{2,}\.?))(?::\d{2,5})?(?:[/?#]\S*)?",
+                    part.get_content(), re.UNICODE | re.IGNORECASE | re.MULTILINE))
+
+            if part.get_content_type() == "text/html":
+                soup = BeautifulSoup(part.get_content(), "html.parser")
+                tags = soup.find_all("a", href=True)
+                for url in tags:
+                    urlList.append(url.get("href"))
+
+            if part.get_filename():
+                if part.get_filename():
+                    filename = part.get_filename()
+                    filemd5 = hashlib.md5(part.get_payload(decode=True)).hexdigest()
+                    filesha1 = hashlib.sha1(part.get_payload(decode=True)).hexdigest()
+                    filesha256 = hashlib.sha256(part.get_payload(decode=True)).hexdigest()
+
+                    data["data"][0]["attachments"].append({"filename": filename, "MD5": filemd5, "SHA1": filesha1, "SHA256": filesha256})
+
+        # Identify each domain reported in the eMail body
+        for url in urlList:
+            analyzeddomain = tldcache(url).registered_domain
+            if analyzeddomain:
+                domainList.append(analyzeddomain)
+
+        # Remove Duplicate
+        urlList = list(set(urlList))
+        domainList = list(set(domainList))
+
         # Identify each relay
         received = msg.get_all("Received")
         if received:
             received.reverse()
             for line in received:
-                hops = re.findall("from\s+(.*?)\s+by(.*?)(?:(?:with|via)(.*?)(?:id|$)|id|$)", line, re.DOTALL | re.X)
+                hops = re.findall("from\s+(.*?)\s+by(.*?)(?:(?:with|via)(.*?)(?:id|$)|id|$)", line,
+                                  re.DOTALL | re.X)
                 for hop in hops:
 
                     ipv4_address = re.findall(r"[0-9]+(?:\.[0-9]+){3}", hop[0], re.DOTALL | re.X)
@@ -137,9 +143,6 @@ def email_analysis(filename, exclude_private_ip):
                     if hop[0]:
                         hopList.append(hop[0])
 
-        if attachList:
-            data["data"][0]["attachments"].append(dict(zip(range(len(attachList)), attachList)))
-
         if hopList:
             data["data"][0]["relay_full"].append(dict(zip(range(len(hopList)), hopList)))
 
@@ -151,7 +154,6 @@ def email_analysis(filename, exclude_private_ip):
             data["data"][0]["domains"].append(dict(zip(range(len(domainList)), domainList)))
 
         print(json.dumps(data, indent=4))
-
 
 def main(argv):
     parser = argparse.ArgumentParser()
@@ -165,7 +167,6 @@ def main(argv):
 
     if arguments.file:
         email_analysis(arguments.file, arguments.excprip)
-
 
 if __name__ == "__main__":
     main(sys.argv[1:])
