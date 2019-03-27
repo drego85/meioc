@@ -1,3 +1,2 @@
 emaildata==0.3.4
 tldextract==2.2.0
-urlextract==0.10

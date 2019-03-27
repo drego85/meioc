@@ -14,7 +14,6 @@ import argparse
 import ipaddress
 import tldextract
 from email import policy
-from urlextract import URLExtract
 from email.parser import BytesParser
 
 tldcache = tldextract.TLDExtract(cache_file="./.tld_set")
@@ -36,8 +35,11 @@ def email_analysis(filename, exclude_private_ip):
         # Identify each url or attachment reported in the eMail body
         for part in msg.walk():
             if part.get_content_type() == "text/plain" or part.get_content_type() == "text/html":
-                extractor = URLExtract()
-                urlList.extend(extractor.find_urls(part.get_content()))
+
+                # https://gist.github.com/dperini/729294
+                urlList.extend(re.findall(
+                    "(?:(?:(?:https?|ftp):)?\/\/)(?:\S+(?::\S*)?@)?(?:(?!(?:10|127)(?:\.\d{1,3}){3})(?!(?:169\.254|192\.168)(?:\.\d{1,3}){2})(?!172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff_-]{0,62})?[a-z0-9\u00a1-\uffff]\.)+(?:[a-z\u00a1-\uffff]{2,}\.?))(?::\d{2,5})?(?:[/?#]\S*)?",
+                    part.get_content(), re.UNICODE | re.IGNORECASE | re.MULTILINE))
             else:
                 if part.get_filename():
                     attachList.append(part.get_filename())
@@ -59,7 +61,8 @@ def email_analysis(filename, exclude_private_ip):
 
         if msg["From"]:
             mail_from = re.findall("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["From"], re.IGNORECASE)
-            mail_from = mail_from[-1]
+            if mail_from:
+                mail_from = mail_from[-1]
         else:
             mail_from = ""
 
