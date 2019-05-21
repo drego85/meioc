@@ -51,17 +51,17 @@ output:
         "1": "server.example.net (unknown [123.123.123.123])",
         "2": "emin10.example.it ([127.0.0.1])",
         "3": "localhost (localhost [127.0.0.1])",
-        "4": "emin10.example.it (host.static.ip.example.it [321.321.321.321])",
+        "4": "emin10.example.it (host.static.ip.example.it [254.254.0.0])",
         "5": "mta09.example.it ([127.0.0.1])",
         "6": "localhost (localhost [127.0.0.1])",
         "7": "mta09.example.it ([127.0.0.1])",
         "8": "localhost (localhost [127.0.0.1])",
-        "9": "mta09.example.it (LHLO mta09.example.it) (987.654.321.0)"
+        "9": "mta09.example.it (LHLO mta09.example.it) (111.222.111.000)"
     },
     "relay_ip": {
         "0": "123.123.123.123",
-        "1": "321.321.321.321",
-        "2": "987.654.321.0"
+        "1": "254.254.0.0",
+        "2": "111.222.111.000"
     },
     "urls": {
         "0": "http://phishingsite.example.net"
@@ -69,7 +69,6 @@ output:
     "domains": {
         "0": "example.net"
     }
-} }
 }
 ```
 
