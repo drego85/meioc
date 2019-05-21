@@ -6,19 +6,19 @@ Meioc allows you to extract the following information from an e-mail, in JSON fo
 
 * Header Field: From
 * Header Field: Sender
+* Header Field: X-Sender
 * Header Field: Subject
 * Header Field: X-Originating-IP
 * Relay Full
 * Relay IP (Only the IPs involved with the possibility of excluding private IPs)
 * Urls
 * Domains
+* Attachments with hash
+* Check SPF record
 
-The software is currently distributed in beta version, every collaboration is welcome.
 
 ### To Do List
 
-- [ ] Scan multiple eMail (directory input)
-- [ ] Whitelist
 - [ ] Support .msg files
 
 ### Requirements
@@ -28,62 +28,48 @@ pip3 install -r requirementes.txt
 
 ### Example
 ```
-$ python3 meioc.py --exclude-private-ip -f email.eml 
+$ python3 meioc.py --exclude-private-ip --spf email.eml 
 ```
 output:
 ```json
 {
-    "data": [
-        {
-            "Filename": "phishing1.eml",
-            "From": "info@example.com",
-            "Sender": "",
-            "Subject": "Phishing Mail",
-            "X-Originating-IP": "",
-            "attachments": [
-                {
-                    "filename": "malware.zip",
-                    "MD5": "35b213ddac9526568f8e586e85047c86",
-                    "SHA1": "e11a9536eb73b5bbcba4648939c662a8b759e0bc",
-                    "SHA256": "eb295b107ce320416c7d263f00854ce2ae0bef5e06c18e1bbeb27ec69feb265e"
-                },
-                {
-                    "filename": "image.jpg",
-                    "MD5": "e1a566bc4ee0fa5f00ca386050d9569f",
-                    "SHA1": "c6864c7a208d331e94c90f33c0626badce4e9a8e",
-                    "SHA256": "bd91ba7049770215ee6628e283a9ebf4b8d185652ab3cdf3d56beab619b1abc4"
-                }
-            ],
-            "relay_full": [
-                {
-                    "0": "localhost.localdomain (unknown [AAA.BBB.CCC.DDD])",
-                    "1": "v6791.vps.example.ru (unknown [127.0.0.1])",
-                    "2": "v6791.vps.example.ru ([QQQ.WWW.EEE.RRR])",
-                    "3": "mail.it ([10.103.10.23])",
-                    "4": "dcp-11.mail.local ([10.103.10.23])",
-                    "5": "dcd-16 ([10.103.10.23])"
-                }
-            ],
-            "relay_ip": [
-                {
-                    "0": "AA.BBB.CCC.DDD",
-                    "1": "QQQ.WWW.EEE.RRR"
-                }
-            ],
-            "url": [
-                {
-                    "0": "https://www.example.com/en/private.html",
-                    "1": "http://phishingsite.random.net"
-                }
-            ],
-            "domain": [
-                {
-                    "0": "example.it",
-                    "1": "random.net"
-                }
-            ]
-        }
-    ]
+    "filename": "malspam.eml",
+    "from": "info@real-domain.com",
+    "sender": "spoof@example.com",
+    "x-sender": "spoof@example.com",
+    "subject": "Malware Inside",
+    "x-originating-ip": "",
+    "spf": false,
+    "attachments": {
+        "filename": "malware.ace",
+        "MD5": "7d5a710c7d65ae7f185097748a52cf4c",
+        "SHA1": "608c493849a24ee415c6d17ba36169f52e04cf83",
+        "SHA256": "d180e0ece6780268d8ffbb19a6ac153c09b7022bb2e79258d8e88676f850a7b6"
+    },
+    "relay_full": {
+        "0": "[127.0.0.1] (port=47760 helo=server.example.net)",
+        "1": "server.example.net (unknown [123.123.123.123])",
+        "2": "emin10.example.it ([127.0.0.1])",
+        "3": "localhost (localhost [127.0.0.1])",
+        "4": "emin10.example.it (host.static.ip.example.it [321.321.321.321])",
+        "5": "mta09.example.it ([127.0.0.1])",
+        "6": "localhost (localhost [127.0.0.1])",
+        "7": "mta09.example.it ([127.0.0.1])",
+        "8": "localhost (localhost [127.0.0.1])",
+        "9": "mta09.example.it (LHLO mta09.example.it) (987.654.321.0)"
+    },
+    "relay_ip": {
+        "0": "123.123.123.123",
+        "1": "321.321.321.321",
+        "2": "987.654.321.0"
+    },
+    "urls": {
+        "0": "http://phishingsite.example.net"
+    },
+    "domains": {
+        "0": "example.net"
+    }
+} }
 }
 ```
 

@@ -8,9 +8,10 @@
 #
 import os
 import re
-import sys
+import spf
 import json
 import hashlib
+import warnings
 import argparse
 import ipaddress
 import tldextract
@@ -18,16 +19,17 @@ from email import policy
 from bs4 import BeautifulSoup
 from email.parser import BytesParser
 
+warnings.simplefilter(action="ignore", category=FutureWarning)
 tldcache = tldextract.TLDExtract(cache_file="./.tld_set")
 
 
-def email_analysis(filename, exclude_private_ip):
+def email_analysis(filename, exclude_private_ip, check_spf):
     urlList = []
-    domainList = []
     hopList = []
     hopListIP = []
-    data = {}
-    data["data"] = []
+    hopListIP = []
+    domainList = []
+    hopListIPnoPrivate = []
 
     with open(filename, "rb") as fp:
         msg = BytesParser(policy=policy.default).parse(fp)
@@ -52,28 +54,29 @@ def email_analysis(filename, exclude_private_ip):
         else:
             mail_sender = ""
 
-        if msg["Subject"]:
-            mail_subject = msg["Subject"]
+        if msg["X-Sender"]:
+            mail_xsender = msg["X-Sender"]
         else:
-            mail_subject = ""
+            mail_xsender = ""
 
         if msg["X-Originating-IP"]:
             mail_xorigip = msg["X-Originating-IP"]
         else:
             mail_xorigip = ""
 
-        data["data"].append({
-            "Filename": os.path.basename(filename),
-            "From": mail_from,
-            "Sender": mail_sender,
-            "Subject": mail_subject,
-            "X-Originating-IP": mail_xorigip,
-            "attachments": [],
-            "relay_full": [],
-            "relay_ip": [],
-            "urls": [],
-            "domains": []
-        })
+        if msg["Subject"]:
+            mail_subject = msg["Subject"]
+        else:
+            mail_subject = ""
+
+        resultmeioc = {
+            "filename": os.path.basename(filename),
+            "from": mail_from,
+            "sender": mail_sender,
+            "x-sender": mail_xsender,
+            "subject": mail_subject,
+            "x-originating-ip": mail_xorigip,
+        }
 
         # Identify each url or attachment reported in the eMail body
         for part in msg.walk():
@@ -96,7 +99,8 @@ def email_analysis(filename, exclude_private_ip):
                     filesha1 = hashlib.sha1(part.get_payload(decode=True)).hexdigest()
                     filesha256 = hashlib.sha256(part.get_payload(decode=True)).hexdigest()
 
-                    data["data"][0]["attachments"].append({"filename": filename, "MD5": filemd5, "SHA1": filesha1, "SHA256": filesha256})
+                    resultmeioc.update(
+                        {"attachments": {"filename": filename, "MD5": filemd5, "SHA1": filesha1, "SHA256": filesha256}})
 
         # Identify each domain reported in the eMail body
         for url in urlList:
@@ -125,48 +129,68 @@ def email_analysis(filename, exclude_private_ip):
                         hop[0], re.DOTALL | re.X)
 
                     if ipv4_address:
-                        if ipaddress.ip_address(ipv4_address[0]):
-                            if ipaddress.ip_address(ipv4_address[0]).is_private:
-                                if not exclude_private_ip:
-                                    hopListIP.append(ipv4_address[0])
-                            else:
-                                hopListIP.append(ipv4_address[0])
+                        for ipv4 in ipv4_address:
+                            if ipaddress.ip_address(ipv4):
+                                hopListIP.append(ipv4)
+                                if not ipaddress.ip_address(ipv4).is_private:
+                                    hopListIPnoPrivate.append(ipv4)
 
                     if ipv6_address:
-                        if ipaddress.ip_address(ipv6_address[0]):
-                            if ipaddress.ip_address(ipv6_address[0]).is_private:
-                                if not exclude_private_ip:
-                                    hopListIP.append(ipv6_address[0])
-                            else:
-                                hopListIP.append(ipv6_address[0])
+                        for ipv6 in ipv6_address:
+                            if ipaddress.ip_address(ipv6):
+                                hopListIP.append(ipv6)
+
+                                if not ipaddress.ip_address(ipv6).is_private:
+                                    hopListIPnoPrivate.append(ipv6)
 
                     if hop[0]:
                         hopList.append(hop[0])
 
         if hopList:
-            data["data"][0]["relay_full"].append(dict(zip(range(len(hopList)), hopList)))
+            resultmeioc.update({"relay_full": dict(zip(range(len(hopList)), hopList))})
 
         if hopListIP:
-            data["data"][0]["relay_ip"].append(dict(zip(range(len(hopListIP)), hopListIP)))
+            if exclude_private_ip:
+                resultmeioc.update({"relay_ip": dict(zip(range(len(hopListIPnoPrivate)), hopListIPnoPrivate))})
+            else:
+                resultmeioc.update({"relay_ip": dict(zip(range(len(hopListIP)), hopListIP))})
 
         if urlList:
-            data["data"][0]["urls"].append(dict(zip(range(len(urlList)), urlList)))
-            data["data"][0]["domains"].append(dict(zip(range(len(domainList)), domainList)))
+            resultmeioc.update({"urls": dict(zip(range(len(urlList)), urlList))})
+            resultmeioc.update({"domains": dict(zip(range(len(domainList)), domainList))})
 
-        print(json.dumps(data, indent=4))
+        # Verify the SPF record if requested
+        if check_spf:
+            testspf = False
+            for ip in hopListIPnoPrivate:
+                if not testspf:
+                    resultspf = spf.check2(ip, mail_from, mail_from.split("@")[1])[0]
 
-def main(argv):
+                    if resultspf == "pass":
+                        testspf = True
+                    else:
+                        testspf = False
+
+            resultmeioc.update({"spf": testspf})
+
+        print(json.dumps(resultmeioc, indent=4))
+
+
+def main():
+    version = "1.0"
     parser = argparse.ArgumentParser()
-    parser.add_argument("-f", "--file", action="store", dest="file", help="Analyze an eMail (.eml format)")
-    # parser.add_argument("-d", "--directory", action="store", dest="directory",help="Analyze multiple eMails (.eml format) contained in a directory.")
+    parser.add_argument("filename", help="Analyze an eMail (.eml format)")
     parser.add_argument("-x", "--exclude-private-ip", action="store_true", dest="excprip",
                         help="Exclude private IPs from the report")
-    # parser.add_argument("-v", "--version", action="version", version="%(prog)s " + swversion)
+    parser.add_argument("-s", "--spf", action="store_true", dest="spf",
+                        help="Check SPF Records")
+    parser.add_argument("-v", "--version", action="version", version="%(prog)s " + version)
 
     arguments = parser.parse_args()
 
-    if arguments.file:
-        email_analysis(arguments.file, arguments.excprip)
+    if arguments.filename:
+        email_analysis(arguments.filename, arguments.excprip, arguments.spf)
+
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main()
