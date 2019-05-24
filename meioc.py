@@ -14,6 +14,7 @@ import hashlib
 import warnings
 import argparse
 import ipaddress
+import encodings
 import tldextract
 from email import policy
 from bs4 import BeautifulSoup
@@ -21,12 +22,12 @@ from email.parser import BytesParser
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 tldcache = tldextract.TLDExtract(cache_file="./.tld_set")
+encodings.aliases.aliases["cp_850"] = "cp850"
 
 
 def email_analysis(filename, exclude_private_ip, check_spf):
     urlList = []
     hopList = []
-    hopListIP = []
     hopListIP = []
     domainList = []
     hopListIPnoPrivate = []
@@ -177,7 +178,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
 
 
 def main():
-    version = "1.0"
+    version = "1.1"
     parser = argparse.ArgumentParser()
     parser.add_argument("filename", help="Analyze an eMail (.eml format)")
     parser.add_argument("-x", "--exclude-private-ip", action="store_true", dest="excprip",
