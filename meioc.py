@@ -43,6 +43,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
 
         if msg["From"]:
             mail_from = re.findall("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["From"], re.IGNORECASE)
+
             if mail_from:
                 mail_from = mail_from[-1]
             else:
@@ -60,8 +61,51 @@ def email_analysis(filename, exclude_private_ip, check_spf):
         else:
             mail_xsender = ""
 
+        if msg["To"]:
+            mail_to = re.findall("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["To"], re.IGNORECASE)
+
+            if mail_to:
+                mail_to = dict(zip(range(len(mail_to)), mail_to))
+            else:
+                mail_to = ""
+        else:
+            mail_to = ""
+
+        if msg["Bcc"]:
+            mail_bcc = msg["Bcc"]
+        else:
+            mail_bcc = ""
+
+        if msg["Cc"]:
+            mail_cc = re.findall("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["Cc"], re.IGNORECASE)
+
+            if mail_cc:
+                mail_cc = dict(zip(range(len(mail_cc)), mail_cc))
+            else:
+                mail_cc = ""
+        else:
+            mail_cc = ""
+
+        if msg["Envelope-to"]:
+
+            mail_envelopeto = re.findall("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["Envelope-to"],
+                                         re.IGNORECASE)
+
+            if mail_envelopeto:
+                mail_envelopeto = dict(zip(range(len(mail_envelopeto)), mail_envelopeto))
+            else:
+                mail_envelopeto = ""
+        else:
+            mail_envelopeto = ""
+
+        if msg["Delivered-To"]:
+            mail_deliveredto = msg["Delivered-To"]
+        else:
+            mail_deliveredto = ""
+
         if msg["X-Originating-IP"]:
-            mail_xorigip = msg["X-Originating-IP"]
+            # Usually the IP is in square brackets, I remove them if present.
+            mail_xorigip = msg["X-Originating-IP"].replace("[", "").replace("]", "")
         else:
             mail_xorigip = ""
 
@@ -75,6 +119,11 @@ def email_analysis(filename, exclude_private_ip, check_spf):
             "from": mail_from,
             "sender": mail_sender,
             "x-sender": mail_xsender,
+            "to": mail_to,
+            "cc": mail_cc,
+            "bcc": mail_bcc,
+            "envelope-to": mail_envelopeto,
+            "delivered-to": mail_deliveredto,
             "subject": mail_subject,
             "x-originating-ip": mail_xorigip,
         }
@@ -95,13 +144,14 @@ def email_analysis(filename, exclude_private_ip, check_spf):
 
             if part.get_filename():
                 if part.get_filename():
-                    filename = part.get_filename()
-                    filemd5 = hashlib.md5(part.get_payload(decode=True)).hexdigest()
-                    filesha1 = hashlib.sha1(part.get_payload(decode=True)).hexdigest()
-                    filesha256 = hashlib.sha256(part.get_payload(decode=True)).hexdigest()
+                    if part.get_payload(decode=True):
+                        filename = part.get_filename()
+                        filemd5 = hashlib.md5(part.get_payload(decode=True)).hexdigest()
+                        filesha1 = hashlib.sha1(part.get_payload(decode=True)).hexdigest()
+                        filesha256 = hashlib.sha256(part.get_payload(decode=True)).hexdigest()
 
-                    resultmeioc.update(
-                        {"attachments": {"filename": filename, "MD5": filemd5, "SHA1": filesha1, "SHA256": filesha256}})
+                        resultmeioc.update(
+                            {"attachments": {"filename": filename, "MD5": filemd5, "SHA1": filesha1, "SHA256": filesha256}})
 
         # Identify each domain reported in the eMail body
         for url in urlList:

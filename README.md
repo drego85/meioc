@@ -37,6 +37,20 @@ output:
     "from": "info@real-domain.com",
     "sender": "spoof@example.com",
     "x-sender": "spoof@example.com",
+    "to": {
+        "0": "victim0@example.com",
+        "1": "victim1@example.com"
+    },
+    "cc": {
+        "0": "victim2@example.com"
+    },
+    "bcc": "",
+    "envelope-to": {
+        "0": "victim0@example.com",
+        "1": "victim1@example.com"
+        "2": "victim2@example.com"
+    },
+    "delivered-to": "",
     "subject": "Malware Inside",
     "x-originating-ip": "",
     "spf": false,
