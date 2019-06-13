@@ -151,7 +151,8 @@ def email_analysis(filename, exclude_private_ip, check_spf):
                         filesha256 = hashlib.sha256(part.get_payload(decode=True)).hexdigest()
 
                         resultmeioc.update(
-                            {"attachments": {"filename": filename, "MD5": filemd5, "SHA1": filesha1, "SHA256": filesha256}})
+                            {"attachments": {"filename": filename, "MD5": filemd5, "SHA1": filesha1,
+                                             "SHA256": filesha256}})
 
         # Identify each domain reported in the eMail body
         for url in urlList:
@@ -214,7 +215,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
         if check_spf:
             testspf = False
             for ip in hopListIPnoPrivate:
-                if not testspf:
+                if not testspf and mail_from:
                     resultspf = spf.check2(ip, mail_from, mail_from.split("@")[1])[0]
 
                     if resultspf == "pass":
