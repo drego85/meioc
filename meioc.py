@@ -189,7 +189,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
 
                     if ipv6_address:
                         for ipv6 in ipv6_address:
-                            if ipaddress.ip_address(ipv6):
+                            if ipaddress.ip_address(ipv6) and not "6::":
                                 hopListIP.append(ipv6)
 
                                 if not ipaddress.ip_address(ipv6).is_private:
