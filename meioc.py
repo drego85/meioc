@@ -42,7 +42,8 @@ def email_analysis(filename, exclude_private_ip, check_spf):
         # Sender Mail: spoof@example.com
 
         if msg["From"]:
-            mail_from = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["From"], re.IGNORECASE)
+            mail_from = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["From"],
+                                   re.IGNORECASE)
 
             if mail_from:
                 mail_from = mail_from[-1]
@@ -62,7 +63,8 @@ def email_analysis(filename, exclude_private_ip, check_spf):
             mail_xsender = ""
 
         if msg["To"]:
-            mail_to = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["To"], re.IGNORECASE)
+            mail_to = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["To"],
+                                 re.IGNORECASE)
 
             if mail_to:
                 mail_to = dict(zip(range(len(mail_to)), mail_to))
@@ -77,7 +79,8 @@ def email_analysis(filename, exclude_private_ip, check_spf):
             mail_bcc = ""
 
         if msg["Cc"]:
-            mail_cc = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["Cc"], re.IGNORECASE)
+            mail_cc = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["Cc"],
+                                 re.IGNORECASE)
 
             if mail_cc:
                 mail_cc = dict(zip(range(len(mail_cc)), mail_cc))
@@ -88,7 +91,8 @@ def email_analysis(filename, exclude_private_ip, check_spf):
 
         if msg["Envelope-to"]:
 
-            mail_envelopeto = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["Envelope-to"],
+            mail_envelopeto = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
+                                         msg["Envelope-to"],
                                          re.IGNORECASE)
 
             if mail_envelopeto:
@@ -137,10 +141,14 @@ def email_analysis(filename, exclude_private_ip, check_spf):
                     part.get_content(), re.UNICODE | re.IGNORECASE | re.MULTILINE))
 
             if part.get_content_type() == "text/html":
-                soup = BeautifulSoup(part.get_content(), "html.parser")
-                tags = soup.find_all("a", href=True)
-                for url in tags:
-                    urlList.append(url.get("href"))
+                # The try/except is necessary, if the body of the eMail contains an incorrect or unencoded HTML code the script freeezes.
+                try:
+                    soup = BeautifulSoup(part.get_content(), "html.parser")
+                    tags = soup.find_all("a", href=True)
+                    for url in tags:
+                        urlList.append(url.get("href"))
+                except:
+                    pass
 
             if part.get_filename():
                 if part.get_filename():
