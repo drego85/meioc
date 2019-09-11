@@ -222,9 +222,13 @@ def email_analysis(filename, exclude_private_ip, check_spf):
         # Verify the SPF record if requested
         if check_spf:
             testspf = False
+            resultspf = ""
             for ip in hopListIPnoPrivate:
                 if not testspf and mail_from:
-                    resultspf = spf.check2(ip, mail_from, mail_from.split("@")[1])[0]
+                    try:
+                        resultspf = spf.check2(ip, mail_from, mail_from.split("@")[1])[0]
+                    except:
+                        pass
 
                     if resultspf == "pass":
                         testspf = True
