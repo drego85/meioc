@@ -47,7 +47,7 @@ output:
     "bcc": "",
     "envelope-to": {
         "0": "victim0@example.com",
-        "1": "victim1@example.com"
+        "1": "victim1@example.com",
         "2": "victim2@example.com"
     },
     "delivered-to": "",
