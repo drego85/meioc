@@ -35,6 +35,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
 
     resultmeioc = {
         "filename": os.path.basename(filename),
+        "date": None,
         "from": None,
         "sender": None,
         "x-sender": None,
@@ -43,6 +44,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
         "bcc": None,
         "envelope-to": None,
         "delivered-to": None,
+        "return-path": None,
         "subject": None,
         "x-originating-ip": None,
         "relay_full": None,
@@ -61,6 +63,9 @@ def email_analysis(filename, exclude_private_ip, check_spf):
         #
         # Header analysis
         #
+
+        if msg["Date"]:
+            resultmeioc["date"] = msg["Date"]
 
         if msg["From"]:
             # A sender obfuscation technique involves entering two e-mails. Only the last one is the real one. Example:
@@ -101,13 +106,21 @@ def email_analysis(filename, exclude_private_ip, check_spf):
             resultmeioc["bcc"] = msg["Bcc"]
 
         if msg["Cc"]:
-            mail_cc = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["Cc"],
-                                 re.IGNORECASE)
+            # Also for the Cc is used a obfuscation technique involves entering two e-mails. Example:
+            #
+            # Cc Name: Mario Rossi <rossi.mario@example.com>
+            # Cc Mail: spoof@example.com
+            mail_ccList = []
+            for mail in msg["Cc"].split(","):
+                mail_cc = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", mail,
+                                     re.IGNORECASE)
+                if mail_cc:
+                    mail_ccList.append(mail_cc[-1])
 
-            if mail_cc:
+            if mail_ccList:
                 # Remove possible duplicates and create a numbered dictionary
-                mail_cc = dict(zip(range(len(list(set(mail_cc)))), list(set(mail_cc))))
-                resultmeioc["cc"] = mail_cc
+                mail_ccList = dict(zip(range(len(list(set(mail_ccList)))), list(set(mail_ccList))))
+                resultmeioc["cc"] = mail_ccList
 
         if msg["Envelope-to"]:
 
@@ -122,6 +135,14 @@ def email_analysis(filename, exclude_private_ip, check_spf):
 
         if msg["Delivered-To"]:
             resultmeioc["delivered-to"] = msg["Delivered-To"]
+
+        if msg["Return-Path"]:
+            mail_returnpath = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
+                                         msg["Return-Path"],
+                                         re.IGNORECASE)
+
+            if mail_returnpath:
+                resultmeioc["return-path"] = mail_returnpath[-1]
 
         if msg["X-Originating-IP"]:
             # Usually the IP is in square brackets, I remove them if present.
@@ -229,7 +250,6 @@ def email_analysis(filename, exclude_private_ip, check_spf):
             resultspf = ""
             for ip in hopListIPnoPrivate:
                 if not testspf and "mail_from" in locals():
-                    resultspf = spf.check2(ip, mail_from[-1], mail_from[-1].split("@")[1])[0]
                     try:
                         resultspf = spf.check2(ip, mail_from[-1], mail_from[-1].split("@")[1])[0]
                     except:
