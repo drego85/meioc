@@ -35,7 +35,6 @@ def email_analysis(filename, exclude_private_ip, check_spf):
 
     resultmeioc = {
         "filename": os.path.basename(filename),
-        "date": None,
         "from": None,
         "sender": None,
         "x-sender": None,
@@ -46,6 +45,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
         "delivered-to": None,
         "return-path": None,
         "subject": None,
+        "date": None,
         "x-originating-ip": None,
         "relay_full": None,
         "relay_ip": None,
