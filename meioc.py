@@ -25,7 +25,7 @@ tldcache = tldextract.TLDExtract(cache_file="./.tld_set")
 encodings.aliases.aliases["cp_850"] = "cp850"
 
 
-def email_analysis(filename, exclude_private_ip, check_spf):
+def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
     urlList = []
     hopList = []
     hopListIP = []
@@ -55,8 +55,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
         "attachments": None
     }
 
-    with open(filename, "rb") as fp:
-        msg = BytesParser(policy=policy.default).parse(fp)
+    msg = BytesParser(policy=policy.default).parse(byte_stream)
 
     if msg:
 
@@ -278,7 +277,8 @@ def main():
     arguments = parser.parse_args()
 
     if arguments.filename:
-        email_analysis(arguments.filename, arguments.excprip, arguments.spf)
+        with open(arguments.filename, 'rb') as fp:
+            email_analysis(fp, arguments.excprip, arguments.spf, arguments.filename)
 
 
 if __name__ == "__main__":
