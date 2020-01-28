@@ -74,21 +74,21 @@ def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
             #
             # Sender Name: Mario Rossi <rossi.mario@example.com>
             # Sender Mail: spoof@example.com
-            mail_from = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["From"],
+            mail_from = re.findall(r"[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["From"],
                                    re.IGNORECASE)
 
             if mail_from:
                 resultmeioc["from"] = mail_from[-1]
 
         if msg["Sender"]:
-            mail_sender = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["Sender"],
+            mail_sender = re.findall(r"[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["Sender"],
                                      re.IGNORECASE)
 
             if mail_sender:
                 resultmeioc["sender"] = mail_sender[-1]
 
         if msg["X-Sender"]:
-            mail_xsender = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
+            mail_xsender = re.findall(r"[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
                                       msg["X-Sender"],
                                       re.IGNORECASE)
 
@@ -96,7 +96,7 @@ def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
                 resultmeioc["x-sender"] = mail_xsender[-1]
 
         if msg["To"]:
-            mail_to = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["To"],
+            mail_to = re.findall(r"[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["To"],
                                  re.IGNORECASE)
 
             if mail_to:
@@ -114,7 +114,7 @@ def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
             # Cc Mail: spoof@example.com
             mail_ccList = []
             for mail in msg["Cc"].split(","):
-                mail_cc = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", mail,
+                mail_cc = re.findall(r"[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", mail,
                                      re.IGNORECASE)
                 if mail_cc:
                     mail_ccList.append(mail_cc[-1])
@@ -126,7 +126,7 @@ def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
 
         if msg["Envelope-to"]:
 
-            mail_envelopeto = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
+            mail_envelopeto = re.findall(r"[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
                                          msg["Envelope-to"],
                                          re.IGNORECASE)
 
@@ -139,7 +139,7 @@ def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
             resultmeioc["delivered-to"] = msg["Delivered-To"]
 
         if msg["Return-Path"]:
-            mail_returnpath = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
+            mail_returnpath = re.findall(r"[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
                                          msg["Return-Path"],
                                          re.IGNORECASE)
 
@@ -159,7 +159,7 @@ def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
         if received:
             received.reverse()
             for line in received:
-                hops = re.findall("from\s+(.*?)\s+by(.*?)(?:(?:with|via)(.*?)(?:id|$)|id|$)", line,
+                hops = re.findall(r"from\s+(.*?)\s+by(.*?)(?:(?:with|via)(.*?)(?:id|$)|id|$)", line,
                                   re.DOTALL | re.X)
                 for hop in hops:
 
@@ -204,7 +204,7 @@ def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
             if part.get_content_type() == "text/plain":
                 # https://gist.github.com/dperini/729294
                 urlList.extend(re.findall(
-                    "(?:(?:(?:https?|ftp):)?\/\/)(?:\S+(?::\S*)?@)?(?:(?!(?:10|127)(?:\.\d{1,3}){3})(?!(?:169\.254|192\.168)(?:\.\d{1,3}){2})(?!172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff_-]{0,62})?[a-z0-9\u00a1-\uffff]\.)+(?:[a-z\u00a1-\uffff]{2,}\.?))(?::\d{2,5})?(?:[/?#]\S*)?",
+                    r"(?:(?:(?:https?|ftp):)?\/\/)(?:\S+(?::\S*)?@)?(?:(?!(?:10|127)(?:\.\d{1,3}){3})(?!(?:169\.254|192\.168)(?:\.\d{1,3}){2})(?!172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff_-]{0,62})?[a-z0-9\u00a1-\uffff]\.)+(?:[a-z\u00a1-\uffff]{2,}\.?))(?::\d{2,5})?(?:[/?#]\S*)?",
                     part.get_content(), re.UNICODE | re.IGNORECASE | re.MULTILINE))
 
             if part.get_content_type() == "text/html":
