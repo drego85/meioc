@@ -261,7 +261,7 @@ def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
 
             resultmeioc["spf"] = testspf
 
-        print(json.dumps(resultmeioc, indent=4))
+        return resultmeioc
 
 
 def main():
@@ -278,7 +278,8 @@ def main():
 
     if arguments.filename:
         with open(arguments.filename, 'rb') as fp:
-            email_analysis(fp, arguments.excprip, arguments.spf, arguments.filename)
+            resultmeioc = email_analysis(fp, arguments.excprip, arguments.spf, arguments.filename)
+            print(json.dumps(resultmeioc, indent=4))
 
 
 if __name__ == "__main__":
