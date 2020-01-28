@@ -266,6 +266,7 @@ def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
 
     return resultmeioc
 
+
 def test_degenerate_1():
     empty = BytesIO(b'')
     r = email_analysis(empty, False, False, '/foo/bar/empty.eml')
@@ -275,6 +276,17 @@ def test_degenerate_1():
     assert r['filename'] == 'empty.eml'
     # it starts with everything being None
     assert all(r[k] is None for k in r.keys() if k != 'filename')
+
+
+def test_minimum_valid_email():
+    x = BytesIO(b'''\
+From: a@example.com\r
+\r
+Body\r
+''')
+    r = email_analysis(x, False, False, 'minimumvalid.eml')
+    assert r['from'] == 'a@example.com'
+
 
 def main():
     version = "1.2"
