@@ -287,6 +287,28 @@ Body\r
     r = email_analysis(x, False, False, 'minimumvalid.eml')
     assert r['from'] == 'a@example.com'
 
+# http://pytest.org/en/latest/parametrize.html#pytest-mark-parametrize-parametrizing-test-functions
+@pytest.mark.parametrize('header_field,analysis_key',
+                         [('To', 'to'),
+                          ('Envelope-to', 'envelope-to'),
+                          ('Cc', 'cc')])
+def test_multiple_address_values(header_field, analysis_key):
+    x = BytesIO('''\
+From: a@example.com\r
+{header_field}: b@example.com,\r
+  c@example.com,\r
+  c@example.com,\r
+  c@example.com,\r
+  d@example.com,\r
+\r
+Body\r
+'''.format(header_field=header_field).encode('ascii'))
+    r = email_analysis(x, False, False, 'multiple_address.eml')
+    # duplicates are removed. at this writing, order is not guaranteed.
+    assert sorted(list(r[analysis_key].keys())) == [0, 1, 2]
+    assert sorted(list(r[analysis_key].values())) == ['b@example.com',
+                                                      'c@example.com',
+                                                      'd@example.com']
 
 def main():
     version = "1.2"
