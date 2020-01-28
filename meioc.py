@@ -20,6 +20,9 @@ from email import policy
 from bs4 import BeautifulSoup
 from email.parser import BytesParser
 
+from io import BytesIO
+import pytest
+
 warnings.simplefilter(action="ignore", category=FutureWarning)
 tldcache = tldextract.TLDExtract(cache_file="./.tld_set")
 encodings.aliases.aliases["cp_850"] = "cp850"
@@ -261,8 +264,17 @@ def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
 
             resultmeioc["spf"] = testspf
 
-        return resultmeioc
+    return resultmeioc
 
+def test_degenerate_1():
+    empty = BytesIO(b'')
+    r = email_analysis(empty, False, False, '/foo/bar/empty.eml')
+    # it always returns a dictionary of info
+    assert isinstance(r, dict)
+    # it takes the basename of the input filename
+    assert r['filename'] == 'empty.eml'
+    # it starts with everything being None
+    assert all(r[k] is None for k in r.keys() if k != 'filename')
 
 def main():
     version = "1.2"

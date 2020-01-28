@@ -2,3 +2,4 @@ tldextract==2.2.2
 py3dns
 pyspf
 beautifulsoup4
+pytest
