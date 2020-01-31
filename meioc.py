@@ -304,11 +304,12 @@ From: a@example.com\r
 Body\r
 '''.format(header_field=header_field).encode('ascii'))
     r = email_analysis(x, False, False, 'multiple_address.eml')
-    # duplicates are removed. at this writing, order is not guaranteed.
-    assert sorted(list(r[analysis_key].keys())) == [0, 1, 2]
-    assert sorted(list(r[analysis_key].values())) == ['b@example.com',
-                                                      'c@example.com',
-                                                      'd@example.com']
+    # duplicates are removed. values are sorted.
+    assert list(r[analysis_key].keys()) == [0, 1, 2]
+    assert list(r[analysis_key].values()) == ['b@example.com',
+                                              'c@example.com',
+                                              'd@example.com']
+
 
 def main():
     version = "1.2"
