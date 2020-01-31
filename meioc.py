@@ -101,7 +101,7 @@ def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
 
             if mail_to:
                 # Remove possible duplicates and create a numbered dictionary
-                mail_to = dict(zip(range(len(list(set(mail_to)))), list(set(mail_to))))
+                mail_to = dict(enumerate(sorted(set(mail_to))))
                 resultmeioc["to"] = mail_to
 
         if msg["Bcc"]:
@@ -121,7 +121,7 @@ def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
 
             if mail_ccList:
                 # Remove possible duplicates and create a numbered dictionary
-                mail_ccList = dict(zip(range(len(list(set(mail_ccList)))), list(set(mail_ccList))))
+                mail_ccList = dict(enumerate(sorted(set(mail_ccList))))
                 resultmeioc["cc"] = mail_ccList
 
         if msg["Envelope-to"]:
@@ -132,7 +132,7 @@ def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
 
             if mail_envelopeto:
                 # Remove possible duplicates and create a numbered dictionary
-                mail_envelopeto = dict(zip(range(len(list(set(mail_envelopeto)))), list(set(mail_envelopeto))))
+                mail_envelopeto = dict(enumerate(sorted(set(mail_envelopeto))))
                 resultmeioc["envelope-to"] = mail_envelopeto
 
         if msg["Delivered-To"]:
