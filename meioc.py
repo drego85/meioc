@@ -287,6 +287,7 @@ Body\r
     r = email_analysis(x, False, False, 'minimumvalid.eml')
     assert r['from'] == 'a@example.com'
 
+
 # http://pytest.org/en/latest/parametrize.html#pytest-mark-parametrize-parametrizing-test-functions
 @pytest.mark.parametrize('header_field,analysis_key',
                          [('To', 'to'),
@@ -309,6 +310,47 @@ Body\r
     assert list(r[analysis_key].values()) == ['b@example.com',
                                               'c@example.com',
                                               'd@example.com']
+
+
+def test_received_headers():
+    # for this test we will put in the \r characters at ends of lines later,
+    # rather than writing them in the string literal itself, owing to its size
+    message = b'''\
+From: a@example.com
+Received: from atnf3.internal (atnf3.bna.internal [10.202.2.43])
+        by sloti1d3t13 (Cyrus 3.1.7-578-g826f590-fmstable-20191119v1) with LMTPA;
+        Tue, 19 Nov 2019 10:06:45 -0500
+Received: from mx3 ([10.202.2.202])
+        by atnf3.internal (LMTPProxy); Tue, 19 Nov 2019 10:06:45 -0500
+Received: from mx3.akefort.example.com (localhost [127.0.0.1])
+        by mailmx.bna.internal (Postfix) with ESMTP id FFE3200455
+        for <qmofta@ksrmfi.ant.example.com>; Tue, 19 Nov 2019 10:06:44 -0500 (EST)
+Received: from mx3.akefort.example.com (localhost [127.0.0.1])
+        by mx3.akefort.example.com (Authentication Milter) with ESMTP
+        id 281EBCC63A0;
+        Tue, 19 Nov 2019 10:06:44 -0500
+Received: from o16648532x149.segr.example.com (o16648532x149.segr.example.com [192.0.2.149])
+        (using TLSv1.2 with cipher ECDHE-RSA-AES128-GCM-SHA256 (128/128 bits))
+        (No client certificate requested)
+        by mx3.akefort.example.com (Postfix) with ESMTPS
+        for <qmofta@ksrmfi.ant.example.com>; Tue, 19 Nov 2019 10:06:43 -0500 (EST)
+Received: by filter1580p1mdw1.segr.example.com with SMTP id filter1580p1mdw1-26871-5DD40501-26
+        2019-11-19 15:06:41.322794586 +0000 UTC m=+322939.232884670
+Received: from NTg0MTE0MQ (ec2-198-51-100-230.compute-1.amazonaws.com [198.51.100.230])
+        by ismtpd0195p1maw1.segr.example.com (SG) with HTTP id DKLcmOTY6_EZigF9tHXg35
+        for <qmofta@ksrmfi.ant.example.com>; Tue, 19 Nov 2019 15:06:41.312 +0000 (UTC)
+
+Body
+'''
+    message = message.replace(b'\n', b'\r\n')
+    x = BytesIO(message)
+    r = email_analysis(x, False, False, 'received.eml')
+    assert len(r['relay_full']) == 6
+    assert len(r['relay_ip']) == 6
+    # the first one in time, i.e. the last one written in the headers,
+    # is the first in the list
+    assert r['relay_full'][0].startswith('NTg0MTE0MQ')
+    assert r['relay_ip'][0] == '198.51.100.230'
 
 
 def main():
