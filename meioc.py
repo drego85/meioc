@@ -189,13 +189,13 @@ def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
                         hopList.append(hop[0])
 
         if hopList:
-            resultmeioc["relay_full"] = dict(zip(range(len(hopList)), hopList))
+            resultmeioc["relay_full"] = dict(enumerate(hopList))
 
         if hopListIP:
             if exclude_private_ip:
-                resultmeioc["relay_ip"] = dict(zip(range(len(hopListIPnoPrivate)), hopListIPnoPrivate))
+                resultmeioc["relay_ip"] = dict(enumerate(hopListIPnoPrivate))
             else:
-                resultmeioc["relay_ip"] = dict(zip(range(len(hopListIP)), hopListIP))
+                resultmeioc["relay_ip"] = dict(enumerate(hopListIP))
 
         #
         # Body analysis
