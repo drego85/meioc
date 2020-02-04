@@ -27,6 +27,7 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 tldcache = tldextract.TLDExtract(cache_file="./.tld_set")
 encodings.aliases.aliases["cp_850"] = "cp850"
 
+__all__ = ['email_analysis', 'main']
 
 def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
     urlList = []
