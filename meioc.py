@@ -20,12 +20,16 @@ from email import policy
 from bs4 import BeautifulSoup
 from email.parser import BytesParser
 
+from io import BytesIO
+import pytest
+
 warnings.simplefilter(action="ignore", category=FutureWarning)
 tldcache = tldextract.TLDExtract(cache_file="./.tld_set")
 encodings.aliases.aliases["cp_850"] = "cp850"
 
+__all__ = ['email_analysis', 'main']
 
-def email_analysis(filename, exclude_private_ip, check_spf):
+def email_analysis(byte_stream, exclude_private_ip, check_spf, filename):
     urlList = []
     hopList = []
     hopListIP = []
@@ -55,8 +59,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
         "attachments": None
     }
 
-    with open(filename, "rb") as fp:
-        msg = BytesParser(policy=policy.default).parse(fp)
+    msg = BytesParser(policy=policy.default).parse(byte_stream)
 
     if msg:
 
@@ -72,21 +75,21 @@ def email_analysis(filename, exclude_private_ip, check_spf):
             #
             # Sender Name: Mario Rossi <rossi.mario@example.com>
             # Sender Mail: spoof@example.com
-            mail_from = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["From"],
+            mail_from = re.findall(r"[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["From"],
                                    re.IGNORECASE)
 
             if mail_from:
                 resultmeioc["from"] = mail_from[-1]
 
         if msg["Sender"]:
-            mail_sender = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["Sender"],
+            mail_sender = re.findall(r"[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["Sender"],
                                      re.IGNORECASE)
 
             if mail_sender:
                 resultmeioc["sender"] = mail_sender[-1]
 
         if msg["X-Sender"]:
-            mail_xsender = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
+            mail_xsender = re.findall(r"[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
                                       msg["X-Sender"],
                                       re.IGNORECASE)
 
@@ -94,12 +97,12 @@ def email_analysis(filename, exclude_private_ip, check_spf):
                 resultmeioc["x-sender"] = mail_xsender[-1]
 
         if msg["To"]:
-            mail_to = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["To"],
+            mail_to = re.findall(r"[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["To"],
                                  re.IGNORECASE)
 
             if mail_to:
                 # Remove possible duplicates and create a numbered dictionary
-                mail_to = dict(zip(range(len(list(set(mail_to)))), list(set(mail_to))))
+                mail_to = dict(enumerate(sorted(set(mail_to))))
                 resultmeioc["to"] = mail_to
 
         if msg["Bcc"]:
@@ -112,32 +115,32 @@ def email_analysis(filename, exclude_private_ip, check_spf):
             # Cc Mail: spoof@example.com
             mail_ccList = []
             for mail in msg["Cc"].split(","):
-                mail_cc = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", mail,
+                mail_cc = re.findall(r"[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", mail,
                                      re.IGNORECASE)
                 if mail_cc:
                     mail_ccList.append(mail_cc[-1])
 
             if mail_ccList:
                 # Remove possible duplicates and create a numbered dictionary
-                mail_ccList = dict(zip(range(len(list(set(mail_ccList)))), list(set(mail_ccList))))
+                mail_ccList = dict(enumerate(sorted(set(mail_ccList))))
                 resultmeioc["cc"] = mail_ccList
 
         if msg["Envelope-to"]:
 
-            mail_envelopeto = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
+            mail_envelopeto = re.findall(r"[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
                                          msg["Envelope-to"],
                                          re.IGNORECASE)
 
             if mail_envelopeto:
                 # Remove possible duplicates and create a numbered dictionary
-                mail_envelopeto = dict(zip(range(len(list(set(mail_envelopeto)))), list(set(mail_envelopeto))))
+                mail_envelopeto = dict(enumerate(sorted(set(mail_envelopeto))))
                 resultmeioc["envelope-to"] = mail_envelopeto
 
         if msg["Delivered-To"]:
             resultmeioc["delivered-to"] = msg["Delivered-To"]
 
         if msg["Return-Path"]:
-            mail_returnpath = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
+            mail_returnpath = re.findall(r"[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
                                          msg["Return-Path"],
                                          re.IGNORECASE)
 
@@ -157,7 +160,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
         if received:
             received.reverse()
             for line in received:
-                hops = re.findall("from\s+(.*?)\s+by(.*?)(?:(?:with|via)(.*?)(?:id|$)|id|$)", line,
+                hops = re.findall(r"from\s+(.*?)\s+by(.*?)(?:(?:with|via)(.*?)(?:id|$)|id|$)", line,
                                   re.DOTALL | re.X)
                 for hop in hops:
 
@@ -187,13 +190,13 @@ def email_analysis(filename, exclude_private_ip, check_spf):
                         hopList.append(hop[0])
 
         if hopList:
-            resultmeioc["relay_full"] = dict(zip(range(len(hopList)), hopList))
+            resultmeioc["relay_full"] = dict(enumerate(hopList))
 
         if hopListIP:
             if exclude_private_ip:
-                resultmeioc["relay_ip"] = dict(zip(range(len(hopListIPnoPrivate)), hopListIPnoPrivate))
+                resultmeioc["relay_ip"] = dict(enumerate(hopListIPnoPrivate))
             else:
-                resultmeioc["relay_ip"] = dict(zip(range(len(hopListIP)), hopListIP))
+                resultmeioc["relay_ip"] = dict(enumerate(hopListIP))
 
         #
         # Body analysis
@@ -202,7 +205,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
             if part.get_content_type() == "text/plain":
                 # https://gist.github.com/dperini/729294
                 urlList.extend(re.findall(
-                    "(?:(?:(?:https?|ftp):)?\/\/)(?:\S+(?::\S*)?@)?(?:(?!(?:10|127)(?:\.\d{1,3}){3})(?!(?:169\.254|192\.168)(?:\.\d{1,3}){2})(?!172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff_-]{0,62})?[a-z0-9\u00a1-\uffff]\.)+(?:[a-z\u00a1-\uffff]{2,}\.?))(?::\d{2,5})?(?:[/?#]\S*)?",
+                    r"(?:(?:(?:https?|ftp):)?\/\/)(?:\S+(?::\S*)?@)?(?:(?!(?:10|127)(?:\.\d{1,3}){3})(?!(?:169\.254|192\.168)(?:\.\d{1,3}){2})(?!172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff_-]{0,62})?[a-z0-9\u00a1-\uffff]\.)+(?:[a-z\u00a1-\uffff]{2,}\.?))(?::\d{2,5})?(?:[/?#]\S*)?",
                     part.get_content(), re.UNICODE | re.IGNORECASE | re.MULTILINE))
 
             if part.get_content_type() == "text/html":
@@ -262,7 +265,93 @@ def email_analysis(filename, exclude_private_ip, check_spf):
 
             resultmeioc["spf"] = testspf
 
-        print(json.dumps(resultmeioc, indent=4))
+    return resultmeioc
+
+
+def test_degenerate_1():
+    empty = BytesIO(b'')
+    r = email_analysis(empty, False, False, '/foo/bar/empty.eml')
+    # it always returns a dictionary of info
+    assert isinstance(r, dict)
+    # it takes the basename of the input filename
+    assert r['filename'] == 'empty.eml'
+    # it starts with everything being None
+    assert all(r[k] is None for k in r.keys() if k != 'filename')
+
+
+def test_minimum_valid_email():
+    x = BytesIO(b'''\
+From: a@example.com\r
+\r
+Body\r
+''')
+    r = email_analysis(x, False, False, 'minimumvalid.eml')
+    assert r['from'] == 'a@example.com'
+
+
+# http://pytest.org/en/latest/parametrize.html#pytest-mark-parametrize-parametrizing-test-functions
+@pytest.mark.parametrize('header_field,analysis_key',
+                         [('To', 'to'),
+                          ('Envelope-to', 'envelope-to'),
+                          ('Cc', 'cc')])
+def test_multiple_address_values(header_field, analysis_key):
+    x = BytesIO('''\
+From: a@example.com\r
+{header_field}: b@example.com,\r
+  c@example.com,\r
+  c@example.com,\r
+  c@example.com,\r
+  d@example.com,\r
+\r
+Body\r
+'''.format(header_field=header_field).encode('ascii'))
+    r = email_analysis(x, False, False, 'multiple_address.eml')
+    # duplicates are removed. values are sorted.
+    assert list(r[analysis_key].keys()) == [0, 1, 2]
+    assert list(r[analysis_key].values()) == ['b@example.com',
+                                              'c@example.com',
+                                              'd@example.com']
+
+
+def test_received_headers():
+    # for this test we will put in the \r characters at ends of lines later,
+    # rather than writing them in the string literal itself, owing to its size
+    message = b'''\
+From: a@example.com
+Received: from atnf3.internal (atnf3.bna.internal [10.202.2.43])
+        by sloti1d3t13 (Cyrus 3.1.7-578-g826f590-fmstable-20191119v1) with LMTPA;
+        Tue, 19 Nov 2019 10:06:45 -0500
+Received: from mx3 ([10.202.2.202])
+        by atnf3.internal (LMTPProxy); Tue, 19 Nov 2019 10:06:45 -0500
+Received: from mx3.akefort.example.com (localhost [127.0.0.1])
+        by mailmx.bna.internal (Postfix) with ESMTP id FFE3200455
+        for <qmofta@ksrmfi.ant.example.com>; Tue, 19 Nov 2019 10:06:44 -0500 (EST)
+Received: from mx3.akefort.example.com (localhost [127.0.0.1])
+        by mx3.akefort.example.com (Authentication Milter) with ESMTP
+        id 281EBCC63A0;
+        Tue, 19 Nov 2019 10:06:44 -0500
+Received: from o16648532x149.segr.example.com (o16648532x149.segr.example.com [192.0.2.149])
+        (using TLSv1.2 with cipher ECDHE-RSA-AES128-GCM-SHA256 (128/128 bits))
+        (No client certificate requested)
+        by mx3.akefort.example.com (Postfix) with ESMTPS
+        for <qmofta@ksrmfi.ant.example.com>; Tue, 19 Nov 2019 10:06:43 -0500 (EST)
+Received: by filter1580p1mdw1.segr.example.com with SMTP id filter1580p1mdw1-26871-5DD40501-26
+        2019-11-19 15:06:41.322794586 +0000 UTC m=+322939.232884670
+Received: from NTg0MTE0MQ (ec2-198-51-100-230.compute-1.amazonaws.com [198.51.100.230])
+        by ismtpd0195p1maw1.segr.example.com (SG) with HTTP id DKLcmOTY6_EZigF9tHXg35
+        for <qmofta@ksrmfi.ant.example.com>; Tue, 19 Nov 2019 15:06:41.312 +0000 (UTC)
+
+Body
+'''
+    message = message.replace(b'\n', b'\r\n')
+    x = BytesIO(message)
+    r = email_analysis(x, False, False, 'received.eml')
+    assert len(r['relay_full']) == 6
+    assert len(r['relay_ip']) == 6
+    # the first one in time, i.e. the last one written in the headers,
+    # is the first in the list
+    assert r['relay_full'][0].startswith('NTg0MTE0MQ')
+    assert r['relay_ip'][0] == '198.51.100.230'
 
 
 def main():
@@ -278,7 +367,9 @@ def main():
     arguments = parser.parse_args()
 
     if arguments.filename:
-        email_analysis(arguments.filename, arguments.excprip, arguments.spf)
+        with open(arguments.filename, 'rb') as fp:
+            resultmeioc = email_analysis(fp, arguments.excprip, arguments.spf, arguments.filename)
+            print(json.dumps(resultmeioc, indent=4))
 
 
 if __name__ == "__main__":
