@@ -210,8 +210,18 @@ def email_analysis(filename, exclude_private_ip, check_spf):
                 try:
                     soup = BeautifulSoup(part.get_content(), "html.parser")
                     tags = soup.find_all("a", href=True)
+
+                    # Handling the cases when a <base> tag is present.
+                    # If this is the case, we must prefix all the URLs by the value of <base>.
+                    tag_base = soup.find_all("base")
+                    if tag_base:
+                        # In browsers, it is the first <base> tag that is applied.
+                        base = tag_base[0].get("href")
+                    else:
+                        base = ''
+
                     for url in tags:
-                        urlList.append(url.get("href"))
+                        urlList.append(base+url.get("href"))
                 except:
                     pass
 
