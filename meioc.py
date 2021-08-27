@@ -21,7 +21,7 @@ from bs4 import BeautifulSoup
 from email.parser import BytesParser
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
-tldcache = tldextract.TLDExtract(cache_file="./.tld_set")
+tldcache = tldextract.TLDExtract(dir_file="./.tld_set")
 encodings.aliases.aliases["cp_850"] = "cp850"
 
 
