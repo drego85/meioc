@@ -46,6 +46,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
         "return-path": None,
         "subject": None,
         "date": None,
+        "user-agent": None,
         "x-originating-ip": None,
         "relay_full": None,
         "relay_ip": None,
@@ -144,6 +145,9 @@ def email_analysis(filename, exclude_private_ip, check_spf):
             if mail_returnpath:
                 resultmeioc["return-path"] = mail_returnpath[-1]
 
+         if msg["User-Agent"]:
+            resultmeioc["user-agent"] = msg["User-Agent"]
+                
         if msg["X-Originating-IP"]:
             # Usually the IP is in square brackets, I remove them if present.
             mail_xorigip = msg["X-Originating-IP"].replace("[", "").replace("]", "")
