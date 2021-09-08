@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 # This file is part of Meioc.
 #
 # Meioc was made with ♥ by Andrea Draghetti
@@ -10,6 +10,7 @@ import os
 import re
 import spf
 import json
+import email
 import hashlib
 import warnings
 import argparse
@@ -18,14 +19,26 @@ import encodings
 import tldextract
 from email import policy
 from bs4 import BeautifulSoup
-from email.parser import BytesParser
 
-warnings.simplefilter(action="ignore", category=FutureWarning)
 tld_cache = tldextract.TLDExtract()
 encodings.aliases.aliases["cp_850"] = "cp850"
+warnings.simplefilter(action="ignore", category=FutureWarning)
 
+def real_email(string):
+    # A sender obfuscation technique involves entering two e-mails. Only the last one is the real one. Example:
+    #
+    # Sender Name: Mario Rossi <rossi.mario@big-society.com>
+    # Sender Mail: spoof@example.com
 
-def email_analysis(filename, exclude_private_ip, check_spf):
+    try:
+        mail = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", string,
+                               re.IGNORECASE)
+        mail = mail[-1]
+        return mail
+    except:
+        return None
+
+def email_analysis(filename, exclude_private_ip, check_spf, file_output):
     urlList = []
     hopList = []
     hopListIP = []
@@ -56,8 +69,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
         "attachments": None
     }
 
-    with open(filename, "rb") as fp:
-        msg = BytesParser(policy=policy.default).parse(fp)
+    msg = email.message_from_file(open(filename, "r", errors="ignore"), policy=policy.default)
 
     if msg:
 
@@ -69,30 +81,22 @@ def email_analysis(filename, exclude_private_ip, check_spf):
             resultmeioc["date"] = msg["Date"]
 
         if msg["From"]:
-            # A sender obfuscation technique involves entering two e-mails. Only the last one is the real one. Example:
-            #
-            # Sender Name: Mario Rossi <rossi.mario@example.com>
-            # Sender Mail: spoof@example.com
-            mail_from = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["From"],
-                                   re.IGNORECASE)
+            mail_from = real_email(msg["From"])
 
             if mail_from:
-                resultmeioc["from"] = mail_from[-1]
+                resultmeioc["from"] = mail_from
 
         if msg["Sender"]:
-            mail_sender = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["Sender"],
-                                     re.IGNORECASE)
+            mail_sender = real_email(msg["Sender"])
 
             if mail_sender:
-                resultmeioc["sender"] = mail_sender[-1]
+                resultmeioc["sender"] = mail_sender
 
         if msg["X-Sender"]:
-            mail_xsender = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
-                                      msg["X-Sender"],
-                                      re.IGNORECASE)
+            mail_xsender = real_email(msg["X-Sender"])
 
             if mail_xsender:
-                resultmeioc["x-sender"] = mail_xsender[-1]
+                resultmeioc["x-sender"] = mail_xsender
 
         if msg["To"]:
             mail_to = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["To"],
@@ -107,16 +111,12 @@ def email_analysis(filename, exclude_private_ip, check_spf):
             resultmeioc["bcc"] = msg["Bcc"]
 
         if msg["Cc"]:
-            # Also for the Cc is used a obfuscation technique involves entering two e-mails. Example:
-            #
-            # Cc Name: Mario Rossi <rossi.mario@example.com>
-            # Cc Mail: spoof@example.com
             mail_ccList = []
             for mail in msg["Cc"].split(","):
-                mail_cc = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", mail,
-                                     re.IGNORECASE)
+                mail_cc = real_email(mail)
+
                 if mail_cc:
-                    mail_ccList.append(mail_cc[-1])
+                    mail_ccList.append(mail_cc)
 
             if mail_ccList:
                 # Remove possible duplicates and create a numbered dictionary
@@ -138,16 +138,14 @@ def email_analysis(filename, exclude_private_ip, check_spf):
             resultmeioc["delivered-to"] = msg["Delivered-To"]
 
         if msg["Return-Path"]:
-            mail_returnpath = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
-                                         msg["Return-Path"],
-                                         re.IGNORECASE)
+            mail_returnpath = real_email(msg["Return-Path"])
 
             if mail_returnpath:
-                resultmeioc["return-path"] = mail_returnpath[-1]
+                resultmeioc["return-path"] = mail_returnpath
 
-         if msg["User-Agent"]:
+        if msg["User-Agent"]:
             resultmeioc["user-agent"] = msg["User-Agent"]
-                
+
         if msg["X-Originating-IP"]:
             # Usually the IP is in square brackets, I remove them if present.
             mail_xorigip = msg["X-Originating-IP"].replace("[", "").replace("]", "")
@@ -155,8 +153,9 @@ def email_analysis(filename, exclude_private_ip, check_spf):
 
         if msg["Subject"]:
             resultmeioc["subject"] = msg["Subject"]
-
+        #
         # Identify each relay
+        #
         received = msg.get_all("Received")
         if received:
             received.reverse()
@@ -225,7 +224,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
                         base = ''
 
                     for url in tags:
-                        urlList.append(base+url.get("href"))
+                        urlList.append(base + url.get("href"))
                 except:
                     pass
 
@@ -276,23 +275,30 @@ def email_analysis(filename, exclude_private_ip, check_spf):
 
             resultmeioc["spf"] = testspf
 
-        print(json.dumps(resultmeioc, indent=4))
+        if file_output:
+            with open(file_output, "w") as f:
+                json.dump(resultmeioc, f, indent=4)
+            print("[!] Output saved in: %s" % file_output)
+        else:
+            print(json.dumps(resultmeioc, indent=4))
 
 
 def main():
-    version = "1.2"
+    version = "1.3"
     parser = argparse.ArgumentParser()
     parser.add_argument("filename", help="Analyze an eMail (.eml format)")
     parser.add_argument("-x", "--exclude-private-ip", action="store_true", dest="excprip",
                         help="Exclude private IPs from the report")
     parser.add_argument("-s", "--spf", action="store_true", dest="spf",
                         help="Check SPF Records")
+    parser.add_argument("-o", "--output", dest="file_output",
+                        help="Write output to <file>")
     parser.add_argument("-v", "--version", action="version", version="%(prog)s " + version)
 
     arguments = parser.parse_args()
 
     if arguments.filename:
-        email_analysis(arguments.filename, arguments.excprip, arguments.spf)
+        email_analysis(arguments.filename, arguments.excprip, arguments.spf, arguments.file_output)
 
 
 if __name__ == "__main__":
