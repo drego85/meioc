@@ -21,7 +21,7 @@ from bs4 import BeautifulSoup
 from email.parser import BytesParser
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
-tldcache = tldextract.TLDExtract(cache_file="./.tld_set")
+tld_cache = tldextract.TLDExtract()
 encodings.aliases.aliases["cp_850"] = "cp850"
 
 
@@ -46,6 +46,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
         "return-path": None,
         "subject": None,
         "date": None,
+        "user-agent": None,
         "x-originating-ip": None,
         "relay_full": None,
         "relay_ip": None,
@@ -144,6 +145,9 @@ def email_analysis(filename, exclude_private_ip, check_spf):
             if mail_returnpath:
                 resultmeioc["return-path"] = mail_returnpath[-1]
 
+         if msg["User-Agent"]:
+            resultmeioc["user-agent"] = msg["User-Agent"]
+                
         if msg["X-Originating-IP"]:
             # Usually the IP is in square brackets, I remove them if present.
             mail_xorigip = msg["X-Originating-IP"].replace("[", "").replace("]", "")
@@ -210,8 +214,18 @@ def email_analysis(filename, exclude_private_ip, check_spf):
                 try:
                     soup = BeautifulSoup(part.get_content(), "html.parser")
                     tags = soup.find_all("a", href=True)
+
+                    # Handling the cases when a <base> tag is present.
+                    # If this is the case, we must prefix all the URLs by the value of <base>.
+                    tag_base = soup.find_all("base")
+                    if tag_base:
+                        # In browsers, it is the first <base> tag that is applied.
+                        base = tag_base[0].get("href")
+                    else:
+                        base = ''
+
                     for url in tags:
-                        urlList.append(url.get("href"))
+                        urlList.append(base+url.get("href"))
                 except:
                     pass
 
@@ -227,7 +241,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
 
         # Identify each domain reported in the eMail body
         for url in urlList:
-            analyzeddomain = tldcache(url).registered_domain
+            analyzeddomain = tld_cache(url).registered_domain
             if analyzeddomain:
                 domainList.append(analyzeddomain)
 
