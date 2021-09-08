@@ -21,7 +21,7 @@ from bs4 import BeautifulSoup
 from email.parser import BytesParser
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
-tldcache = tldextract.TLDExtract(dir_file="./.tld_set")
+tld_cache = tldextract.TLDExtract()
 encodings.aliases.aliases["cp_850"] = "cp850"
 
 
@@ -241,7 +241,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
 
         # Identify each domain reported in the eMail body
         for url in urlList:
-            analyzeddomain = tldcache(url).registered_domain
+            analyzeddomain = tld_cachetld_cache(url).registered_domain
             if analyzeddomain:
                 domainList.append(analyzeddomain)
 
