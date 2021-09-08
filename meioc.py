@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # This file is part of Meioc.
 #
-# Meioc was made with ♥ by Andrea Draghetti
+# Meioc was made with ♥ by Andrea Draghetti and forked by @dave_daves
 #
 # This file may be licensed under the terms of of the
 # GNU General Public License Version 3 (the ``GPL'').
@@ -17,6 +17,7 @@ import argparse
 import ipaddress
 import encodings
 import tldextract
+import fnmatch
 from email import policy
 from bs4 import BeautifulSoup
 
@@ -45,6 +46,7 @@ def email_analysis(filename, exclude_private_ip, check_spf, file_output):
     domainList = []
     attachmentsList = []
     hopListIPnoPrivate = []
+    xPhpDict = {}
 
     resultmeioc = {
         "filename": os.path.basename(filename),
@@ -66,7 +68,9 @@ def email_analysis(filename, exclude_private_ip, check_spf, file_output):
         "spf": None,
         "urls": None,
         "domains": None,
-        "attachments": None
+        "attachments": None,
+        "X-Mailer": None,
+        "X-PHP-*": None
     }
 
     msg = email.message_from_file(open(filename, "r", errors="ignore"), policy=policy.default)
@@ -197,6 +201,19 @@ def email_analysis(filename, exclude_private_ip, check_spf, file_output):
                 resultmeioc["relay_ip"] = dict(zip(range(len(hopListIPnoPrivate)), hopListIPnoPrivate))
             else:
                 resultmeioc["relay_ip"] = dict(zip(range(len(hopListIP)), hopListIP))
+
+        # search for X-PHP-* headers
+        xPhpPattern = 'X-PHP-*'
+        xPhpHeaders = fnmatch.filter(msg.keys(), xPhpPattern)
+        xPhpDict = {}
+        for h in xPhpHeaders:
+            xPhpDict.update({h: msg[h]})
+        if xPhpDict:
+            resultmeioc["X-PHP-*"] = xPhpDict
+
+        # X-Mailer header could be useful
+        if msg["X-Mailer"]:
+            resultmeioc["X-Mailer"] = msg["X-Mailer"]
 
         #
         # Body analysis
