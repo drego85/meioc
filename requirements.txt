@@ -1,4 +1,4 @@
 tldextract
 py3dns
 pyspf
-bs4
+beautifulsoup4
