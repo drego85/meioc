@@ -241,7 +241,7 @@ def email_analysis(filename, exclude_private_ip, check_spf):
 
         # Identify each domain reported in the eMail body
         for url in urlList:
-            analyzeddomain = tld_cachetld_cache(url).registered_domain
+            analyzeddomain = tld_cache(url).registered_domain
             if analyzeddomain:
                 domainList.append(analyzeddomain)
 
