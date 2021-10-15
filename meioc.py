@@ -38,7 +38,7 @@ def real_email(string):
     except:
         return None
 
-def email_analysis(filename, exclude_private_ip, check_spf, file_output):
+def email_analysis(run_as_module, filename, exclude_private_ip, check_spf, file_output):
     urlList = []
     hopList = []
     hopListIP = []
@@ -280,7 +280,15 @@ def email_analysis(filename, exclude_private_ip, check_spf, file_output):
                 json.dump(resultmeioc, f, indent=4)
             print("[!] Output saved in: %s" % file_output)
         else:
-            print(json.dumps(resultmeioc, indent=4))
+            if run_as_module:
+                return resultmeioc
+            else:
+                print(json.dumps(resultmeioc, indent=4))
+
+
+# Function to be used as a wrapper of email_analysis if meioc is used as a module
+def analyze(filename, exclude_private_ip=False, spf=False, file_output=None):
+    return email_analysis(True, filename, exclude_private_ip, spf, file_output)
 
 
 def main():
@@ -298,7 +306,7 @@ def main():
     arguments = parser.parse_args()
 
     if arguments.filename:
-        email_analysis(arguments.filename, arguments.excprip, arguments.spf, arguments.file_output)
+        email_analysis(False, arguments.filename, arguments.excprip, arguments.spf, arguments.file_output)
 
 
 if __name__ == "__main__":
