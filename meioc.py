@@ -264,7 +264,7 @@ def email_analysis(filename, exclude_private_ip, check_spf, file_output):
             for ip in hopListIPnoPrivate:
                 if not testspf and "mail_from" in locals():
                     try:
-                        resultspf = spf.check2(ip, mail_from[-1], mail_from[-1].split("@")[1])[0]
+                        resultspf = spf.check2(ip, mail_from, mail_from.split("@")[1])[0]
                     except:
                         pass
 
