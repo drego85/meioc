@@ -66,7 +66,7 @@ pip3 install -r requirements.txt
 ## Example
 
 ```BASH
-$ python3 meioc.py --exclude-private-ip --spf malspam.eml 
+python3 meioc.py --exclude-private-ip --spf malspam.eml 
 ```
 
 output:
