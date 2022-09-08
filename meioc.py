@@ -132,8 +132,8 @@ def email_analysis(filename, exclude_private_ip, check_spf, file_output):
 
             if mail_envelopeto:
                 # Convert in lower, remove possible duplicates and create a numbered dictionary
-                mail_envelopeto = dict(zip(range(len(list(set(mail_envelopeto)))), list(set(mail_envelopeto))))
                 mail_envelopeto = [x.lower() for x in mail_envelopeto]
+                mail_envelopeto = dict(zip(range(len(list(set(mail_envelopeto)))), list(set(mail_envelopeto))))
                 result_meioc["envelope-to"] = mail_envelopeto
 
         if msg["Delivered-To"]:
