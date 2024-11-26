@@ -43,6 +43,35 @@ def real_email(string):
     except:
         return None
 
+def normalize_headers(raw_email_bytes):
+    """
+    Normalize email headers by fixing spaces before ':' in a bytes-like email,
+    while preserving multi-line header continuation.
+    
+    Args:
+        raw_email_bytes (bytes): Raw email in bytes-like format.
+    Returns:
+        bytes: Normalized email in bytes-like format.
+    """
+
+    raw_email = raw_email_bytes.decode("utf-8", errors="replace")
+    
+    lines = raw_email.splitlines()
+    normalized_lines = []
+    for i, line in enumerate(lines):
+        if line.startswith((' ', '\t')):
+            normalized_lines.append(line)
+        else:
+            if ": " in line or ":" in line:
+                header, sep, value = line.partition(":")
+                header = header.strip()
+                normalized_lines.append(f"{header}:{value}")
+            else:
+                normalized_lines.append(line)
+    
+    normalized_email = "\n".join(normalized_lines)
+    return normalized_email.encode("utf-8")
+
 def email_analysis(filename, exclude_private_ip, check_spf, check_dkim, file_output):
     urls_list = []
     hops_list = []
@@ -65,6 +94,7 @@ def email_analysis(filename, exclude_private_ip, check_spf, check_dkim, file_out
         "subject": None,
         "date": None,
         "user-agent": None,
+        "x-mailer": None,
         "x-originating-ip": None,
         "relay_full": None,
         "relay_ip": None,
@@ -77,11 +107,12 @@ def email_analysis(filename, exclude_private_ip, check_spf, check_dkim, file_out
 
     # Open E-mail
     with open(filename, "rb") as email_file:
-            raw_email_content = email_file.read()
+        raw_email_content = email_file.read()
 
     # Parsing E-mail
     if raw_email_content:
-        parsed_email = message_from_bytes(raw_email_content, policy=policy.default)
+        raw_email_content_normalized = normalize_headers(raw_email_content)
+        parsed_email = message_from_bytes(raw_email_content_normalized, policy=policy.default)
 
     if parsed_email:
 
@@ -153,6 +184,9 @@ def email_analysis(filename, exclude_private_ip, check_spf, check_dkim, file_out
 
         if parsed_email["User-Agent"]:
             result_meioc["user-agent"] = parsed_email["User-Agent"]
+
+        if parsed_email["X-Mailer"]:
+            result_meioc["x-mailer"] = parsed_email["X-Mailer"]
 
         if parsed_email["X-Originating-IP"]:
             # Usually the IP is in square brackets, I remove them if present.
@@ -292,7 +326,7 @@ def email_analysis(filename, exclude_private_ip, check_spf, check_dkim, file_out
         if check_dkim:
             test_dkim = False
             try:
-                dkim_result = dkim.verify(raw_email_content)
+                dkim_result = dkim.verify(raw_email_content_normalized)
                 if dkim_result:
                     test_dkim = True
             except:
