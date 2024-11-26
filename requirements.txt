@@ -1,5 +1,5 @@
-tldextract
 py3dns
 pyspf
-beautifulsoup4
 dkimpy
+tldextract
+beautifulsoup4
