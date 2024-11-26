@@ -10,6 +10,7 @@ import os
 import re
 import spf
 import json
+import dkim
 import email
 import hashlib
 import warnings
@@ -19,32 +20,36 @@ import encodings
 import tldextract
 from email import policy
 from bs4 import BeautifulSoup
+from email.utils import parseaddr
+from email import message_from_bytes
 
 tld_cache = tldextract.TLDExtract()
 encodings.aliases.aliases["cp_850"] = "cp850"
 warnings.simplefilter(action="ignore", category=FutureWarning)
+
+# Precompile the regex pattern for email extraction
+email_regex = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", re.IGNORECASE)
 
 def real_email(string):
     # A sender obfuscation technique involves entering two e-mails. Only the last one is the real one. Example:
     #
     # Sender Name: Mario Rossi <rossi.mario@big-society.com>
     # Sender Mail: spoof@example.com
+    # From values is: "Mario Rossi <rossi.mario@big-society.com>" <spoof@example.com>
 
     try:
-        mail = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", string,
-                               re.IGNORECASE)
-        mail = mail[-1].lower()
-        return mail
+        sender_name, email_address = parseaddr(string)
+        return email_address.lower() if email_address else None
     except:
         return None
 
-def email_analysis(filename, exclude_private_ip, check_spf, file_output):
-    urlList = []
-    hopList = []
-    hopListIP = []
-    domainList = []
-    attachmentsList = []
-    hopListIPnoPrivate = []
+def email_analysis(filename, exclude_private_ip, check_spf, check_dkim, file_output):
+    urls_list = []
+    hops_list = []
+    hops_list_ip = []
+    domains_list = []
+    attachments_ist = []
+    hops_list_ip_public = []
 
     result_meioc = {
         "filename": os.path.basename(filename),
@@ -64,106 +69,106 @@ def email_analysis(filename, exclude_private_ip, check_spf, file_output):
         "relay_full": None,
         "relay_ip": None,
         "spf": None,
+        "dkim": None,
         "urls": None,
         "domains": None,
         "attachments": None
     }
 
-    msg = email.message_from_file(open(filename, "r", errors="ignore"), policy=policy.default)
+    # Open E-mail
+    with open(filename, "rb") as email_file:
+            raw_email_content = email_file.read()
 
-    if msg:
+    # Parsing E-mail
+    if raw_email_content:
+        parsed_email = message_from_bytes(raw_email_content, policy=policy.default)
+
+    if parsed_email:
 
         #
         # Header analysis
         #
 
-        if msg["Date"]:
-            result_meioc["date"] = msg["Date"]
+        if parsed_email["Date"]:
+            result_meioc["date"] = parsed_email["Date"]
 
-        if msg["From"]:
-            mail_from = real_email(msg["From"])
+        if parsed_email["From"]:
+            mail_from = real_email(parsed_email["From"])
 
             if mail_from:
                 result_meioc["from"] = mail_from
 
-        if msg["Sender"]:
-            mail_sender = real_email(msg["Sender"])
+        if parsed_email["Sender"]:
+            mail_sender = real_email(parsed_email["Sender"])
 
             if mail_sender:
                 result_meioc["sender"] = mail_sender
 
-        if msg["X-Sender"]:
-            mail_xsender = real_email(msg["X-Sender"])
+        if parsed_email["X-Sender"]:
+            mail_xsender = real_email(parsed_email["X-Sender"])
 
             if mail_xsender:
                 result_meioc["x-sender"] = mail_xsender
 
-        if msg["To"]:
-            mail_to = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}", msg["To"],
-                                 re.IGNORECASE)
-
+        if parsed_email["To"]:
+            mail_to = email_regex.findall(parsed_email["To"])
             if mail_to:
-                # Convert in lower, remove possible duplicates and create a numbered dictionary
-                mail_to = [x.lower() for x in mail_to]
-                mail_to = dict(zip(range(len(list(set(mail_to)))), list(set(mail_to))))
+                # Convert to lower, remove possible duplicates, and create a numbered dictionary
+                mail_to = {i: x.lower() for i, x in enumerate(set(mail_to))}
                 result_meioc["to"] = mail_to
 
-        if msg["Bcc"]:
-            result_meioc["bcc"] = msg["Bcc"].lower()
+        if parsed_email["Bcc"]:
+            result_meioc["bcc"] = parsed_email["Bcc"].lower()
 
-        if msg["Cc"]:
+        if parsed_email["Cc"]:
             mail_cc_list = []
-            for mail in msg["Cc"].split(","):
+            for mail in parsed_email["Cc"].split(","):
                 mail_cc = real_email(mail)
 
                 if mail_cc:
                     mail_cc_list.append(mail_cc)
 
-            if mail_ccList:
-                # Remove possible duplicates and create a numbered dictionary
-                mail_cc_list = dict(zip(range(len(list(set(mail_cc_list)))), list(set(mail_cc_list))))
+            if mail_cc_list:
+                # Convert to lower, remove possible duplicates, and create a numbered dictionary
+                mail_cc_list = {i: x.lower() for i, x in enumerate(set(mail_cc_list))}
                 result_meioc["cc"] = mail_cc_list
 
-        if msg["Envelope-to"]:
+        if parsed_email["Envelope-to"]:
 
-            mail_envelopeto = re.findall("[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}",
-                                         msg["Envelope-to"],
-                                         re.IGNORECASE)
+            mail_envelopeto = email_regex.findall(parsed_email["Envelope-to"])
 
             if mail_envelopeto:
-                # Convert in lower, remove possible duplicates and create a numbered dictionary
-                mail_envelopeto = [x.lower() for x in mail_envelopeto]
-                mail_envelopeto = dict(zip(range(len(list(set(mail_envelopeto)))), list(set(mail_envelopeto))))
+                # Convert to lower, remove possible duplicates, and create a numbered dictionary
+                mail_envelopeto = {i: x.lower() for i, x in enumerate(set(mail_envelopeto))}
                 result_meioc["envelope-to"] = mail_envelopeto
 
-        if msg["Delivered-To"]:
-            result_meioc["delivered-to"] = msg["Delivered-To"].lower()
+        if parsed_email["Delivered-To"]:
+            result_meioc["delivered-to"] = parsed_email["Delivered-To"].lower()
 
-        if msg["Return-Path"]:
-            mail_returnpath = real_email(msg["Return-Path"])
+        if parsed_email["Return-Path"]:
+            mail_returnpath = real_email(parsed_email["Return-Path"])
 
             if mail_returnpath:
                 result_meioc["return-path"] = mail_returnpath
 
-        if msg["User-Agent"]:
-            result_meioc["user-agent"] = msg["User-Agent"]
+        if parsed_email["User-Agent"]:
+            result_meioc["user-agent"] = parsed_email["User-Agent"]
 
-        if msg["X-Originating-IP"]:
+        if parsed_email["X-Originating-IP"]:
             # Usually the IP is in square brackets, I remove them if present.
-            mail_xorigip = msg["X-Originating-IP"].replace("[", "").replace("]", "")
+            mail_xorigip = parsed_email["X-Originating-IP"].replace("[", "").replace("]", "")
             result_meioc["x-originating-ip"] = mail_xorigip
 
-        if msg["Subject"]:
-            result_meioc["subject"] = msg["Subject"]
+        if parsed_email["Subject"]:
+            result_meioc["subject"] = parsed_email["Subject"]
         #
         # Identify each relay
         #
-        received = msg.get_all("Received")
+        received = parsed_email.get_all("Received")
         if received:
             received.reverse()
             for line in received:
-                hops = re.findall("from\s+(.*?)\s+by(.*?)(?:(?:with|via)(.*?)(?:id|$)|id|$)", line,
-                                  re.DOTALL | re.X)
+                hops = re.findall("from\s+(.*?)\s+by(.*?)(?:(?:with|via)(.*?)(?:id|$)|id|$)", line, re.DOTALL | re.X)
                 for hop in hops:
 
                     ipv4_address = re.findall(r"[0-9]+(?:\.[0-9]+){3}", hop[0], re.DOTALL | re.X)
@@ -176,42 +181,44 @@ def email_analysis(filename, exclude_private_ip, check_spf, file_output):
                     if ipv4_address:
                         for ipv4 in ipv4_address:
                             if ipaddress.ip_address(ipv4):
-                                hopListIP.append(ipv4)
+                                hops_list_ip.append(ipv4)
                                 if not ipaddress.ip_address(ipv4).is_private:
-                                    hopListIPnoPrivate.append(ipv4)
+                                    hops_list_ip_public.append(ipv4)
 
                     if ipv6_address:
                         for ipv6 in ipv6_address:
                             if ipaddress.ip_address(ipv6) and not "6::":
-                                hopListIP.append(ipv6)
+                                hops_list_ip.append(ipv6)
 
                                 if not ipaddress.ip_address(ipv6).is_private:
-                                    hopListIPnoPrivate.append(ipv6)
+                                    hops_list_ip_public.append(ipv6)
 
                     if hop[0]:
-                        hopList.append(hop[0])
+                        hops_list.append(hop[0])
 
-        if hopList:
-            result_meioc["relay_full"] = dict(zip(range(len(hopList)), hopList))
+        if hops_list:
+            result_meioc["relay_full"] = dict(zip(range(len(hops_list)), hops_list))
 
-        if hopListIP:
+        if hops_list_ip:
             if exclude_private_ip:
-                result_meioc["relay_ip"] = dict(zip(range(len(hopListIPnoPrivate)), hopListIPnoPrivate))
+                result_meioc["relay_ip"] = dict(zip(range(len(hops_list_ip_public)), hops_list_ip_public))
             else:
-                result_meioc["relay_ip"] = dict(zip(range(len(hopListIP)), hopListIP))
+                result_meioc["relay_ip"] = dict(zip(range(len(hops_list_ip)), hops_list_ip))
 
         #
         # Body analysis
         #
-        for part in msg.walk():
+        for part in parsed_email.walk():
+            # Extracts each URL identified in the e-mail in text/plain format
             if part.get_content_type() == "text/plain":
+                # Regex is based on what Diego Perini shared:
                 # https://gist.github.com/dperini/729294
-                urlList.extend(re.findall(
-                    "(?:(?:(?:https?|ftp):)?\/\/)(?:\S+(?::\S*)?@)?(?:(?!(?:10|127)(?:\.\d{1,3}){3})(?!(?:169\.254|192\.168)(?:\.\d{1,3}){2})(?!172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff_-]{0,62})?[a-z0-9\u00a1-\uffff]\.)+(?:[a-z\u00a1-\uffff]{2,}\.?))(?::\d{2,5})?(?:[/?#]\S*)?",
-                    part.get_content(), re.UNICODE | re.IGNORECASE | re.MULTILINE))
-
+                url_regex = r'(?:(?:(?:https?|ftp):)?\/\/)(?:\S+(?::\S*)?@)?(?:(?!(?:10|127)(?:\.\d{1,3}){3})(?!(?:169\.254|192\.168)(?:\.\d{1,3}){2})(?!172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff_-]{0,62})?[a-z0-9\u00a1-\uffff]\.)+(?:[a-z\u00a1-\uffff]{2,}\.?))(?::\d{2,5})?(?:[/?#][^\s>]*)?'
+                urls_list.extend(re.findall(url_regex, part.get_content(), re.UNICODE | re.IGNORECASE | re.MULTILINE))
+            
+            # Extracts each URL identified in the e-mail in text/html format
             if part.get_content_type() == "text/html":
-                # The try/except is necessary, if the body of the eMail contains an incorrect or unencoded HTML code the script freeezes.
+                # The try/except is necessary, if the body of the e-mail contains an incorrect or unencoded HTML code the script freeezes.
                 try:
                     soup = BeautifulSoup(part.get_content(), "html.parser")
                     tags = soup.find_all("a", href=True)
@@ -226,10 +233,11 @@ def email_analysis(filename, exclude_private_ip, check_spf, file_output):
                         base = ''
 
                     for url in tags:
-                        urlList.append(base + url.get("href"))
+                        urls_list.append(base + url.get("href"))
                 except:
                     pass
 
+            # Extracts information from each file attached to the e-mail
             if part.get_filename():
                 if part.get_payload(decode=True):
                     filename = part.get_filename()
@@ -237,45 +245,61 @@ def email_analysis(filename, exclude_private_ip, check_spf, file_output):
                     filesha1 = hashlib.sha1(part.get_payload(decode=True)).hexdigest()
                     filesha256 = hashlib.sha256(part.get_payload(decode=True)).hexdigest()
 
-                    attachmentsList.append({"filename": filename, "MD5": filemd5, "SHA1": filesha1,
+                    attachments_ist.append({"filename": filename, "MD5": filemd5, "SHA1": filesha1,
                                             "SHA256": filesha256})
 
-        # Identify each domain reported in the eMail body
-        for url in urlList:
+        # Identify each domain reported in the e-mail body
+        for url in urls_list:
             analyzeddomain = tld_cache(url).registered_domain
             if analyzeddomain:
-                domainList.append(analyzeddomain)
+                domains_list.append(analyzeddomain)
 
-        # Remove Duplicate
-        urlList = list(set(urlList))
-        domainList = list(set(domainList))
+        # Remove Duplicate from List
+        urls_list = list(set(urls_list))
+        domains_list = list(set(domains_list))
 
-        if urlList:
-            result_meioc["urls"] = dict(zip(range(len(urlList)), urlList))
-            result_meioc["domains"] = dict(zip(range(len(domainList)), domainList))
+        if urls_list:
+            result_meioc["urls"] = dict(zip(range(len(urls_list)), urls_list))
+            result_meioc["domains"] = dict(zip(range(len(domains_list)), domains_list))
 
-        if attachmentsList:
-            result_meioc["attachments"] = attachmentsList
+        if attachments_ist:
+            result_meioc["attachments"] = attachments_ist
 
         #
         # Verify the SPF record if requested
         #
         if check_spf:
-            testspf = False
+            test_spf = False
             resultspf = ""
-            for ip in hopListIPnoPrivate:
-                if not testspf and "mail_from" in locals():
+            for ip in hops_list_ip_public:
+                if not test_spf and "mail_from" in locals():
                     try:
-                        resultspf = spf.check2(ip, mail_from, mail_from.split("@")[1])[0]
+                        domain_from = mail_from.split("@")[1]
+                        result_spf = spf.check2(ip, mail_from,domain_from)[0]
                     except:
                         pass
 
-                    if resultspf == "pass":
-                        testspf = True
+                    if result_spf == "pass":
+                        test_spf = True
                     else:
-                        testspf = False
+                        test_spf = False
 
-            result_meioc["spf"] = testspf
+            result_meioc["spf"] = test_spf
+
+        #
+        # Verify the DKIM record if requested
+        #
+        if check_dkim:
+            test_dkim = False
+            try:
+                dkim_result = dkim.verify(raw_email_content)
+                if dkim_result:
+                    test_dkim = True
+            except:
+                pass
+
+            result_meioc["dkim"] = test_dkim
+
 
         if file_output:
             with open(file_output, "w") as f:
@@ -286,13 +310,15 @@ def email_analysis(filename, exclude_private_ip, check_spf, file_output):
 
 
 def main():
-    version = "1.3"
+    version = "1.4"
     parser = argparse.ArgumentParser()
-    parser.add_argument("filename", help="Analyze an eMail (.eml format)")
+    parser.add_argument("filename", help="Analyze an e-mail (.eml format)")
     parser.add_argument("-x", "--exclude-private-ip", action="store_true", dest="excprip",
                         help="Exclude private IPs from the report")
     parser.add_argument("-s", "--spf", action="store_true", dest="spf",
                         help="Check SPF Records")
+    parser.add_argument("-d", "--dkim", action="store_true", dest="dkim",
+                        help="Check DKIM Records")
     parser.add_argument("-o", "--output", dest="file_output",
                         help="Write output to <file>")
     parser.add_argument("-v", "--version", action="version", version="%(prog)s " + version)
@@ -300,7 +326,7 @@ def main():
     arguments = parser.parse_args()
 
     if arguments.filename:
-        email_analysis(arguments.filename, arguments.excprip, arguments.spf, arguments.file_output)
+        email_analysis(arguments.filename, arguments.excprip, arguments.spf ,arguments.dkim, arguments.file_output)
 
 
 if __name__ == "__main__":
