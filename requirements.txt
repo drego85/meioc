@@ -3,3 +3,8 @@ pyspf
 dkimpy
 tldextract
 beautifulsoup4
+# for outlook msg format
+compoundfiles
+compressed-rtf
+rtfparse # Python 3.9+ only
+html2text
