@@ -205,6 +205,8 @@ def email_analysis(filename, exclude_private_ip, check_spf, check_dkim, file_out
                 hops = re.findall("from\s+(.*?)\s+by(.*?)(?:(?:with|via)(.*?)(?:id|$)|id|$)", line, re.DOTALL | re.X)
                 for hop in hops:
 
+                    #ipv4_address = re.findall(r"\b((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\b", hop[0])
+                    
                     ipv4_address = re.findall(r"[0-9]+(?:\.[0-9]+){3}", hop[0], re.DOTALL | re.X)
 
                     # https://gist.github.com/dfee/6ed3a4b05cfe7a6faf40a2102408d5d8
@@ -284,7 +286,7 @@ def email_analysis(filename, exclude_private_ip, check_spf, check_dkim, file_out
 
         # Identify each domain reported in the e-mail body
         for url in urls_list:
-            analyzeddomain = tld_cache(url).registered_domain
+            analyzeddomain = tld_cache(url).top_domain_under_public_suffix
             if analyzeddomain:
                 domains_list.append(analyzeddomain)
 
