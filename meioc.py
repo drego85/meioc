@@ -23,7 +23,6 @@ from bs4 import BeautifulSoup
 from email.utils import parseaddr
 from email import message_from_bytes
 
-tld_cache = tldextract.TLDExtract()
 encodings.aliases.aliases["cp_850"] = "cp850"
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -286,9 +285,9 @@ def email_analysis(filename, exclude_private_ip, check_spf, check_dkim, file_out
 
         # Identify each domain reported in the e-mail body
         for url in urls_list:
-            analyzeddomain = tld_cache(url).top_domain_under_public_suffix
-            if analyzeddomain:
-                domains_list.append(analyzeddomain)
+            analyzed_domain = tldextract.extract(url).top_domain_under_public_suffix
+            if analyzed_domain:
+                domains_list.append(analyzed_domain)
 
         # Remove Duplicate from List
         urls_list = list(set(urls_list))
