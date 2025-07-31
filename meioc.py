@@ -21,7 +21,9 @@ import tldextract
 from email import policy
 from bs4 import BeautifulSoup
 from email.utils import parseaddr
+from email.utils import getaddresses
 from email import message_from_bytes
+from email.message import EmailMessage
 
 encodings.aliases.aliases["cp_850"] = "cp850"
 warnings.simplefilter(action="ignore", category=FutureWarning)
@@ -29,18 +31,51 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 # Precompile the regex pattern for email extraction
 email_regex = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", re.IGNORECASE)
 
-def real_email(string):
-    # A sender obfuscation technique involves entering two e-mails. Only the last one is the real one. Example:
-    #
-    # Sender Name: Mario Rossi <rossi.mario@big-society.com>
-    # Sender Mail: spoof@example.com
-    # From values is: "Mario Rossi <rossi.mario@big-society.com>" <spoof@example.com>
+
+# Safely extracts a single email address from a structured or unstructured email header.
+def extract_email_address(header):
+    if header is None:
+        return None
 
     try:
-        sender_name, email_address = parseaddr(string)
-        return email_address.lower() if email_address else None
-    except:
+        # For structured headers like 'From', 'Sender', etc.
+        if hasattr(header, "addresses") and header.addresses:
+            return header.addresses[0].addr_spec.lower()
+
+        # For unstructured headers like 'Return-Path'
+        name, addr = parseaddr(str(header))
+        if addr:
+            return addr.lower()
+
+    except Exception:
+        pass
+
+    return None
+
+
+# Safely extracts multiple email addresses from a structured or unstructured email header.
+def extract_multiple_email_addresses(header):
+    if header is None:
         return None
+
+    try:
+        # Structured header: use .addresses
+        if hasattr(header, "addresses") and header.addresses:
+            raw = [addr.addr_spec.lower() for addr in header.addresses]
+
+        else:
+            # Unstructured: parse using getaddresses (handles comma-separated lists)
+            parsed = getaddresses([str(header)])
+            raw = [addr.lower() for name, addr in parsed if addr]
+
+        if raw:
+            # Remove duplicates and enumerate
+            return {i: email for i, email in enumerate(set(raw))}
+    except Exception:
+        pass
+
+    return None
+
 
 def normalize_headers(raw_email_bytes):
     """
@@ -122,75 +157,31 @@ def email_analysis(filename, exclude_private_ip, check_spf, check_dkim, file_out
         if parsed_email["Date"]:
             result_meioc["date"] = parsed_email["Date"]
 
-        if parsed_email["From"]:
-            mail_from = real_email(parsed_email["From"])
+        result_meioc["from"] = extract_email_address(parsed_email.get("From"))
 
-            if mail_from:
-                result_meioc["from"] = mail_from
+        result_meioc["sender"] = extract_email_address(parsed_email.get("Sender"))
 
-        if parsed_email["Sender"]:
-            mail_sender = real_email(parsed_email["Sender"])
+        result_meioc["x-sender"] = extract_email_address(parsed_email.get("X-Sender"))
 
-            if mail_sender:
-                result_meioc["sender"] = mail_sender
+        result_meioc["bcc"] = extract_email_address(parsed_email.get("Bcc"))
 
-        if parsed_email["X-Sender"]:
-            mail_xsender = real_email(parsed_email["X-Sender"])
+        result_meioc["delivered-to"] = extract_multiple_email_addresses(parsed_email.get("Delivered-To"))
 
-            if mail_xsender:
-                result_meioc["x-sender"] = mail_xsender
+        result_meioc["return-path"] = extract_email_address(parsed_email.get("Return-Path"))
 
-        if parsed_email["To"]:
-            mail_to = email_regex.findall(parsed_email["To"])
-            if mail_to:
-                # Convert to lower, remove possible duplicates, and create a numbered dictionary
-                mail_to = {i: x.lower() for i, x in enumerate(set(mail_to))}
-                result_meioc["to"] = mail_to
+        result_meioc["to"] = extract_multiple_email_addresses(parsed_email.get("To"))
 
-        if parsed_email["Bcc"]:
-            result_meioc["bcc"] = parsed_email["Bcc"].lower()
+        result_meioc["cc"] = extract_multiple_email_addresses(parsed_email.get("Cc"))
 
-        if parsed_email["Cc"]:
-            mail_cc_list = []
-            for mail in parsed_email["Cc"].split(","):
-                mail_cc = real_email(mail)
+        result_meioc["envelope-to"] = extract_multiple_email_addresses(parsed_email.get("Envelope-to"))
 
-                if mail_cc:
-                    mail_cc_list.append(mail_cc)
+        result_meioc["user-agent"] = parsed_email.get("User-Agent")
 
-            if mail_cc_list:
-                # Convert to lower, remove possible duplicates, and create a numbered dictionary
-                mail_cc_list = {i: x.lower() for i, x in enumerate(set(mail_cc_list))}
-                result_meioc["cc"] = mail_cc_list
+        result_meioc["x-mailer"] = parsed_email.get("X-Mailer")
 
-        if parsed_email["Envelope-to"]:
-
-            mail_envelopeto = email_regex.findall(parsed_email["Envelope-to"])
-
-            if mail_envelopeto:
-                # Convert to lower, remove possible duplicates, and create a numbered dictionary
-                mail_envelopeto = {i: x.lower() for i, x in enumerate(set(mail_envelopeto))}
-                result_meioc["envelope-to"] = mail_envelopeto
-
-        if parsed_email["Delivered-To"]:
-            result_meioc["delivered-to"] = parsed_email["Delivered-To"].lower()
-
-        if parsed_email["Return-Path"]:
-            mail_returnpath = real_email(parsed_email["Return-Path"])
-
-            if mail_returnpath:
-                result_meioc["return-path"] = mail_returnpath
-
-        if parsed_email["User-Agent"]:
-            result_meioc["user-agent"] = parsed_email["User-Agent"]
-
-        if parsed_email["X-Mailer"]:
-            result_meioc["x-mailer"] = parsed_email["X-Mailer"]
-
-        if parsed_email["X-Originating-IP"]:
-            # Usually the IP is in square brackets, I remove them if present.
-            mail_xorigip = parsed_email["X-Originating-IP"].replace("[", "").replace("]", "")
-            result_meioc["x-originating-ip"] = mail_xorigip
+        x_orig = parsed_email.get("X-Originating-IP")
+        if x_orig:
+            result_meioc["x-originating-ip"] = x_orig.replace("[", "").replace("]", "")
 
         if parsed_email["Subject"]:
             result_meioc["subject"] = parsed_email["Subject"]
@@ -222,7 +213,7 @@ def email_analysis(filename, exclude_private_ip, check_spf, check_dkim, file_out
 
                     if ipv6_address:
                         for ipv6 in ipv6_address:
-                            if ipaddress.ip_address(ipv6) and not "6::":
+                            if ipaddress.ip_address(ipv6):
                                 hops_list_ip.append(ipv6)
 
                                 if not ipaddress.ip_address(ipv6).is_private:
@@ -305,19 +296,16 @@ def email_analysis(filename, exclude_private_ip, check_spf, check_dkim, file_out
         #
         if check_spf:
             test_spf = False
-            resultspf = ""
+            mail_from = result_meioc.get("from")
+            domain_from = mail_from.split("@")[1]
             for ip in hops_list_ip_public:
-                if not test_spf and "mail_from" in locals():
+                if not test_spf and mail_from:
                     try:
-                        domain_from = mail_from.split("@")[1]
-                        result_spf = spf.check2(ip, mail_from,domain_from)[0]
+                        result_spf = spf.check(ip, mail_from, domain_from)[0]
+                        if result_spf == "pass":
+                            test_spf = True
                     except:
                         pass
-
-                    if result_spf == "pass":
-                        test_spf = True
-                    else:
-                        test_spf = False
 
             result_meioc["spf"] = test_spf
 
