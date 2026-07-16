@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meioc"
+version = "1.4"
+description = "Mail Extractor IoC for analyzing .eml messages and extracting indicators of compromise."
+readme = "README.md"
+requires-python = ">=3.7"
+license = "GPL-3.0-only"
+authors = [
+	{ name = "Andrea Draghetti" },
+]
+dependencies = [
+	"py3dns",
+	"pyspf",
+	"dkimpy",
+	"tldextract",
+	"beautifulsoup4",
+]
+classifiers = [
+	"Programming Language :: Python :: 3",
+	"Programming Language :: Python :: 3.7",
+	"Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/drego85/meioc"
+
+[project.scripts]
+meioc = "meioc:main"
+
+[tool.setuptools]
+py-modules = ["meioc"]
