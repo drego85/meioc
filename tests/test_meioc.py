@@ -151,6 +151,12 @@ class ParsingTests(unittest.TestCase):
 
 
 class RelayAndAuthenticationTests(unittest.TestCase):
+    def setUp(self):
+        # Online verification tests must never resolve real recipient domains.
+        self.mx_lookup = patch.object(meioc, "mx_dns_hosts", return_value=[])
+        self.mx_lookup.start()
+        self.addCleanup(self.mx_lookup.stop)
+
     def test_received_ipv6_trailing_compression_is_preserved(self):
         for source in (
             "mail.example (2603:10b6::)",

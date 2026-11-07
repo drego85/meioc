@@ -28,13 +28,21 @@ Live DNS verification is enabled by default.
 For SPF, Meioc evaluates the SMTP envelope sender (`MAIL FROM`/`Return-Path`),
 not the visible `From` header. It resolves the recipient domain's current MX
 records and, when that edge is present in the `Received` chain, evaluates the
-IP that connected to the published MX. This prevents a downstream forwarding
+IP that connected to the published MX, provided that the MAIL FROM identity is
+available in that hop or in SPF evidence explicitly bound to the same client IP.
+The final Return-Path is not assumed to describe an earlier SMTP session. If the
+selected MX session lacks envelope evidence, SPF is `not_available`. This prevents a downstream forwarding
 hop, such as an antispam gateway delivering into a mailbox provider, from being
 mistaken for the original sender. If the MX edge cannot be identified, Meioc
 falls back to the `client-ip` recorded by the receiving infrastructure and then
 to the first global source IP at the receiving boundary. The complete RFC
 result is retained: `pass`, `fail`, `softfail`, `neutral`, `none`, `temperror`,
 or `permerror`.
+
+Recipient discovery uses the first available header group in this order:
+`Envelope-To`, `Delivered-To`, `To`, `Cc`. Current MX records are a reconstruction
+aid, not proof of the historical route. The verbose report identifies the chosen
+session and any missing evidence.
 
 Authentication and alignment are reported separately. A message can therefore
 have `authenticated: false` while still having strict or relaxed alignment when
@@ -55,6 +63,11 @@ unavailable.
 DMARC is evaluated independently by discovering the author-domain or
 PSL-derived organizational-domain policy. DMARC passes only when SPF passes and
 is aligned, or when the same DKIM signature both verifies and is aligned.
+The current evaluator follows the RFC 7489 policy/PSL model; migration to RFC
+9989 policy discovery is not implemented. Invalid policy/alignment values and
+duplicate tags produce `permerror`. A temporary authentication DNS failure is
+preserved as `temperror` when no other aligned method passes; incomplete evidence
+is reported as `not_available`.
 
 The `reported` object contains evidence copied from `Authentication-Results` or
 `Received-SPF`. It is deliberately marked separately from the independent DNS
