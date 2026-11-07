@@ -151,6 +151,27 @@ class ParsingTests(unittest.TestCase):
 
 
 class RelayAndAuthenticationTests(unittest.TestCase):
+    def test_repeated_ip_cannot_select_an_envelope_from_another_session(self):
+        message = parse_message(
+            b"Received: from relay.example (40.107.200.81) by final.example\r\n"
+            b"Received: from relay.example (40.107.200.81) by mx.example\r\n"
+            b"Received-SPF: pass; identity=mailfrom; client-ip=40.107.200.81; "
+            b"envelope-from=sender@example.org\r\n\r\n"
+        )
+        identity = meioc.extract_reported_identity(message)
+        self.assertIsNone(identity["mail_from"])
+        self.assertIsNone(identity["helo"])
+
+    def test_discordant_mail_from_reports_are_ambiguous(self):
+        message = parse_message(
+            b"Received: from relay.example (40.107.200.81) by mx.example\r\n"
+            b"Received-SPF: pass; identity=mailfrom; client-ip=40.107.200.81; "
+            b"envelope-from=sender@example.org\r\n"
+            b"Received-SPF: pass; identity=mailfrom; client-ip=40.107.200.81; "
+            b"envelope-from=other@example.org\r\n\r\n"
+        )
+        self.assertIsNone(meioc.extract_reported_identity(message)["mail_from"])
+
     def test_inherited_subdomain_policy_is_reported(self):
         message = parse_message(b"From: sender@mail.example.org\r\n\r\n")
         with patch.object(meioc, "find_dmarc_record", return_value=(

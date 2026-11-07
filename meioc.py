@@ -359,6 +359,26 @@ def envelope_sender(message: Message) -> str | None:
     return select_reported_mail_from(candidates, None)
 
 
+def session_mail_from(message: Message, client_ip: str) -> str | None:
+    """Accept reported envelope evidence only for an unambiguous source session."""
+    occurrences = sum(
+        client_ip in find_ip_addresses(parse_received_header(str(value))["from"] or "")
+        for value in message.get_all("Received", [])
+    )
+    if occurrences != 1:
+        return None
+    identities = {
+        candidate["mail_from"] for candidate in spf_report_candidates(message)
+        if candidate.get("client_ip", "") == client_ip and candidate.get("mail_from")
+        and candidate.get("identity") != "pra"
+    }
+    domains = {mailbox_domain(value) for value in identities}
+    mailboxes = {value for value in identities if "@" in value}
+    if len(domains) != 1 or len(mailboxes) > 1:
+        return None
+    return next(iter(mailboxes or identities))
+
+
 def extract_recipient_mx_identity(
     message: Message, timeout: float = DNS_TIMEOUT_SECONDS
 ) -> dict[str, str | None] | None:
@@ -394,9 +414,7 @@ def extract_recipient_mx_identity(
         if envelope_match:
             mail_from = normalize_smtp_mailbox(envelope_match.group(1))
         # Bind reported envelope evidence to this session's source IP.
-        for candidate in spf_report_candidates(message):
-            if candidate.get("client_ip") == global_ips[0] and candidate.get("mail_from"):
-                mail_from = mail_from or candidate["mail_from"]
+        mail_from = mail_from or session_mail_from(message, global_ips[0])
         return {
             "mail_from": mail_from,
             "client_ip": global_ips[0],
@@ -432,11 +450,22 @@ def extract_reported_identity(message: Message) -> dict[str, str | None] | None:
             continue
         if client_ip not in received_ips:
             continue
+        mail_from = session_mail_from(message, client_ip)
+        # Split headers without an IP are usable only if all MAIL FROM reports agree.
+        if not mail_from and not candidate.get("mail_from"):
+            identities = {
+                item["mail_from"] for item in candidates
+                if item.get("identity") == "mailfrom" and item.get("mail_from")
+            }
+            if len(identities) == 1 and sum(
+                client_ip in find_ip_addresses(parse_received_header(str(value))["from"] or "")
+                for value in message.get_all("Received", [])
+            ) == 1:
+                mail_from = next(iter(identities))
         return {
-            "mail_from": candidate.get("mail_from")
-            or select_reported_mail_from(candidates, candidate.get("result")),
+            "mail_from": mail_from,
             "client_ip": client_ip,
-            "helo": candidate.get("helo"),
+            "helo": candidate.get("helo") if mail_from else None,
             "source": candidate["header"],
         }
     return None
