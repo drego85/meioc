@@ -151,6 +151,15 @@ class ParsingTests(unittest.TestCase):
 
 
 class RelayAndAuthenticationTests(unittest.TestCase):
+    def test_received_ipv6_trailing_compression_is_preserved(self):
+        for source in (
+            "mail.example (2603:10b6::)",
+            "mail.example [IPv6:2603:10b6::]",
+            "mail.example [2603:10b6::%eth0]",
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(meioc.find_ip_addresses(source), ["2603:10b6::"])
+
     def test_invalid_dmarc_policy_tags_are_rejected(self):
         message = parse_message(b"From: sender@example.org\r\n\r\n")
         for record in (

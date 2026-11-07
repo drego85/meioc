@@ -139,7 +139,7 @@ def find_ip_addresses(value: str) -> list[str]:
     for candidate in candidates:
         for token in re.split(r"[\[\](),]", candidate):
             token = token.strip().removeprefix("IPv6:").split("%", 1)[0]
-            token = token.rstrip(":;")
+            token = token.rstrip(";")
             try:
                 addresses.append(str(ipaddress.ip_address(token)))
             except ValueError:
