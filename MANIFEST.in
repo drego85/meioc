@@ -1,0 +1,5 @@
+include requirements.txt
+include LICENSE
+prune sourceemail
+prune tests
+global-exclude *.eml *.msg *.pyc

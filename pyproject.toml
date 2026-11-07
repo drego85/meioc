@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meioc"
+dynamic = ["version", "dependencies"]
+description = "Mail Extractor IoC for analyzing EML and Outlook MSG messages."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-only"
+authors = [
+	{ name = "Andrea Draghetti" },
+]
+classifiers = [
+	"Programming Language :: Python :: 3",
+	"Programming Language :: Python :: 3.10",
+	"Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/drego85/meioc"
+
+[project.scripts]
+meioc = "meioc:main"
+
+[tool.setuptools]
+py-modules = ["meioc", "dns_backend"]
+
+[tool.setuptools.dynamic]
+version = {attr = "meioc.VERSION"}
+dependencies = {file = ["requirements.txt"]}

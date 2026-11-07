@@ -2,7 +2,7 @@
 
 ![Version](https://img.shields.io/badge/version-2.1-blue)
 ![GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)
-![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-brightgreen)
+![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen)
 
 **Meioc** (Mail Extractor IoC) analyzes RFC 5322 `.eml` messages and Microsoft
 Outlook `.msg` containers, and emits a deterministic JSON report for SOC and
@@ -89,10 +89,23 @@ git clone https://github.com/drego85/meioc.git
 cd meioc
 python3 -m venv venv
 source venv/bin/activate
-python3 -m pip install -r requirements.txt
+python3 -m pip install .
+meioc --version
 ```
 
-Python 3.9 or newer is required.
+Python 3.10 or newer is required. Dependencies are declared once in
+`requirements.txt` and used by the package build. Both `meioc suspicious.eml`
+and `python3 meioc.py suspicious.eml` are supported.
+
+To build a wheel and source distribution:
+
+```bash
+python3 -m pip install build
+python3 -m build
+```
+
+Local email samples in `sourceemail/` must never be committed or distributed.
+Package artifacts explicitly exclude email samples.
 
 ## Usage
 
