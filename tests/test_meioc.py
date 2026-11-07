@@ -1,5 +1,6 @@
 """Regression tests for Meioc's EML analysis."""
 
+import io
 import sys
 import types
 import unittest
@@ -18,6 +19,13 @@ def parse_message(raw_message: bytes):
 
 
 class ParsingTests(unittest.TestCase):
+    def test_input_growth_cannot_bypass_size_limit(self):
+        with patch.object(Path, "stat") as stat:
+            stat.return_value.st_size = 1
+            with patch.object(Path, "open", return_value=io.BytesIO(b"x" * 1048577)):
+                with self.assertRaisesRegex(ValueError, "size limit"):
+                    meioc.analyze_file("growing.eml", online_auth=False, max_size_mb=1)
+
     def test_normalization_never_changes_body(self):
         raw_message = b"Subject : Test\r\n\r\nBody field : keep this\r\n"
         normalized = meioc.normalize_malformed_headers(raw_message)
@@ -143,6 +151,42 @@ class ParsingTests(unittest.TestCase):
 
 
 class RelayAndAuthenticationTests(unittest.TestCase):
+    def test_authentication_properties_belong_to_the_selected_method(self):
+        message = parse_message(
+            b"Authentication-Results: mx.example; spf=pass smtp.mailfrom=bounce.example; "
+            b"dkim=pass header.d=signed.example; "
+            b"dmarc=pass header.from=author.example\r\n\r\n"
+        )
+        dkim = meioc.parse_authentication_result(message, "dkim")
+        dmarc = meioc.parse_authentication_result(message, "dmarc")
+        self.assertEqual(dkim["header_domain"], "signed.example")
+        self.assertIsNone(dkim["mail_from"])
+        self.assertIsNone(dkim["header_from"])
+        self.assertEqual(dmarc["header_from"], "author.example")
+        self.assertIsNone(dmarc["header_domain"])
+
+    def test_dkim_dns_exception_is_a_temporary_error(self):
+        message = parse_message(
+            b"DKIM-Signature: v=1; a=rsa-sha256; d=example.org; s=mail; b=x\r\n\r\n"
+        )
+        fake_dkim = types.ModuleType("dkim")
+        fake_dkim.DnsTimeoutError = RuntimeError
+
+        class FakeDKIM:
+            def __init__(self, raw_message, timeout):
+                pass
+
+            def verify(self, idx, dnsfunc):
+                return dnsfunc(b"mail._domainkey.example.org.")
+
+        fake_dkim.DKIM = FakeDKIM
+        with patch.dict(sys.modules, {"dkim": fake_dkim}):
+            with patch.object(
+                meioc, "dkim_dns_lookup", side_effect=meioc.DNSLookupError("timeout")
+            ):
+                result = meioc.verify_dkim_online(message, b"fixture")
+        self.assertEqual(result["result"], "temperror")
+
     raw_message = (
         b"Return-Path: <sender@example.org>\r\n"
         b"Received: from receiver.local by receiver.local with LMTP; "
@@ -521,6 +565,20 @@ class RelayAndAuthenticationTests(unittest.TestCase):
 
 
 class IndicatorTests(unittest.TestCase):
+    def test_malformed_urls_do_not_discard_valid_indicators(self):
+        message = EmailMessage()
+        message.set_content("https://[invalid https://example.org/path")
+        self.assertEqual(
+            meioc.extract_indicators(message)["urls"], ["https://example.org/path"]
+        )
+        self.assertEqual(
+            meioc.extract_urls_from_html(
+                '<a href="https://[invalid">bad</a>'
+                '<a href="https://example.org/path">good</a>'
+            ),
+            ["https://example.org/path"],
+        )
+
     def test_html_filters_non_urls_and_resolves_base(self):
         html = """
         <base href="https://example.com/root/">

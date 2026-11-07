@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract SOC-relevant indicators and authentication evidence from EML files."""
+"""Extract SOC-relevant indicators and authentication evidence from EML/MSG files."""
 
 from __future__ import annotations
 
@@ -481,6 +481,8 @@ def parse_authentication_result(
                 continue
             prefix = text.split(";", 1)[0].strip()
             authserv_id = prefix if prefix and "=" not in prefix else None
+            segment_end = text.find(";", match.end())
+            text = text[match.end():segment_end if segment_end >= 0 else None]
             return {
                 "result": match.group(1).lower(),
                 "source": "header",
@@ -1010,6 +1012,8 @@ def verify_dkim_online(message: Message, raw_message: bytes) -> dict[str, Any]:
                     check["reason"] = dkim_failure_reason(check, queried_keys)
         except Exception as error:  # dkimpy exposes resolver-specific exceptions
             check["verified"] = False
+            if dkim_key_name(check) in dns_errors:
+                check["reason"] = "dns_error"
             check["error"] = f"{type(error).__name__}: {error}"
         checks.append(check)
 
@@ -1085,7 +1089,10 @@ def extract_urls_from_html(content: str) -> list[str]:
     for tag_name, attribute in attributes.items():
         for tag in soup.find_all(tag_name, **{attribute: True}):
             candidate = str(tag.get(attribute)).strip()
-            resolved = urljoin(base, candidate) if base else candidate
+            try:
+                resolved = urljoin(base, candidate) if base else candidate
+            except ValueError:
+                continue
             if is_supported_url(resolved):
                 urls.append(clean_url(resolved))
     urls.extend(extract_urls_from_text(soup.get_text(" ")))
@@ -1094,8 +1101,15 @@ def extract_urls_from_html(content: str) -> list[str]:
 
 def is_supported_url(value: str) -> bool:
     """Accept absolute HTTP(S)/FTP URLs and reject mailto and script values."""
-    parsed = urlsplit(value)
-    return parsed.scheme.lower() in {"http", "https", "ftp"} and bool(parsed.hostname)
+    try:
+        parsed = urlsplit(value)
+        return (
+            parsed.scheme.lower() in {"http", "https", "ftp"}
+            and bool(parsed.hostname)
+            and "[.]" not in parsed.netloc
+        )
+    except ValueError:
+        return False
 
 
 def extract_indicators(message: Message) -> dict[str, Any]:
@@ -1253,7 +1267,10 @@ def analyze_file(
         raise ValueError(
             f"Email is {size} bytes; the configured limit is {maximum} bytes."
         )
-    raw_message = path.read_bytes()
+    with path.open("rb") as email_file:
+        raw_message = email_file.read(maximum + 1)
+    if len(raw_message) > maximum:
+        raise ValueError("Email exceeds the configured size limit while reading.")
     if path.suffix.lower() == ".msg":
         return analyze_msg_bytes(
             raw_message,
