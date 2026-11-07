@@ -341,7 +341,7 @@ class RelayAndAuthenticationTests(unittest.TestCase):
             b"Received: from workteam.esvacloud.com (85.159.115.48) "
             b"by protection.outlook.com\r\n"
             b"Received: from outlook.example (40.107.200.81) "
-            b"by workteam.esvacloud.com\r\n"
+            b"by workteam.esvacloud.com (envelope-from <sender@viscapitalventure.com>)\r\n"
             b"Received-SPF: Fail; client-ip=85.159.115.48; "
             b"helo=workteam.esvacloud.com;\r\n"
             b"Authentication-Results: spf=fail "
@@ -371,6 +371,19 @@ class RelayAndAuthenticationTests(unittest.TestCase):
         self.assertEqual(calls[0]["s"], "sender@viscapitalventure.com")
         self.assertEqual(calls[0]["h"], "outlook.example")
         self.assertEqual(result["identity"]["source"], "recipient-mx")
+
+    def test_mx_session_does_not_borrow_a_rewritten_envelope(self):
+        message = parse_message(
+            b"Received: from origin.example (40.107.200.81) by mx.example\r\n"
+            b"Return-Path: <rewritten@forwarder.example>\r\n"
+            b"To: user@recipient.example\r\nCc: user@other.example\r\n\r\n"
+        )
+        with patch.object(meioc, "mx_dns_hosts", return_value=["mx.example"]) as lookup:
+            identity = meioc.extract_recipient_mx_identity(message)
+        self.assertIsNone(identity["mail_from"])
+        self.assertIsNone(identity["helo"])
+        lookup.assert_called_once()
+        self.assertEqual(lookup.call_args.args[0], "recipient.example")
 
     def test_smtp_mailbox_wrappers_are_normalized(self):
         variants = (

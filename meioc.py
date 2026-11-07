@@ -40,7 +40,7 @@ HEADER_NAME_WITH_SPACE = re.compile(
 )
 URL_PATTERN = re.compile(r"(?:(?:https?|ftp)://)[^\s<>\"']+", re.IGNORECASE)
 ENVELOPE_FROM_PATTERN = re.compile(
-    r"envelope-from\s*[=:]\s*<?([^>\s;)]+)", re.IGNORECASE
+    r"envelope-from\s*(?:[=:]\s*|\s+)<?([^>\s;)]+)", re.IGNORECASE
 )
 HELO_PATTERN = re.compile(r"\bhelo[= ]([^\s;)]+)", re.IGNORECASE)
 SMTP_HELO_PATTERN = re.compile(r"smtp\.helo\s*=\s*([^;\s]+)", re.IGNORECASE)
@@ -338,6 +338,8 @@ def recipient_domains(message: Message) -> list[str]:
     addresses = []
     for header_name in ("Envelope-To", "Delivered-To", "To", "Cc"):
         addresses.extend(extract_addresses(message.get_all(header_name, [])))
+        if addresses:
+            break
     return ordered_unique(
         domain for address in addresses if (domain := mailbox_domain(address))
     )
@@ -371,12 +373,14 @@ def extract_recipient_mx_identity(
     if not published_mx_hosts:
         return None
 
-    mail_from = envelope_sender(message)
     for raw_header in reversed(message.get_all("Received", [])):
         header = " ".join(str(raw_header).split())
         clauses = parse_received_header(header)
         receiver = infer_source_hostname(clauses["by"] or "")
         if not receiver or receiver.lower() not in published_mx_hosts:
+            continue
+        recipient = extract_single_address(clauses["for"])
+        if recipient and mailbox_domain(recipient) not in recipient_domains(message):
             continue
         source = clauses["from"] or ""
         global_ips = [
@@ -386,14 +390,20 @@ def extract_recipient_mx_identity(
         if not global_ips:
             continue
         envelope_match = ENVELOPE_FROM_PATTERN.search(header)
+        mail_from = None
         if envelope_match:
-            mail_from = normalize_smtp_mailbox(envelope_match.group(1)) or mail_from
+            mail_from = normalize_smtp_mailbox(envelope_match.group(1))
+        # Bind reported envelope evidence to this session's source IP.
+        for candidate in spf_report_candidates(message):
+            if candidate.get("client_ip") == global_ips[0] and candidate.get("mail_from"):
+                mail_from = mail_from or candidate["mail_from"]
         return {
             "mail_from": mail_from,
             "client_ip": global_ips[0],
-            "helo": infer_source_hostname(source),
+            "helo": infer_source_hostname(source) if mail_from else None,
             "source": "recipient-mx",
             "receiver": receiver.lower(),
+            "reason": None if mail_from else "MAIL FROM is unavailable for the selected MX session.",
         }
     return None
 
@@ -450,7 +460,7 @@ def select_reported_mail_from(
 
 def infer_source_hostname(source: str) -> str | None:
     """Infer the hostname following the Received header's from keyword."""
-    match = re.search(r"\bfrom\s+([^\s(]+)", source, re.IGNORECASE)
+    match = re.match(r"from\s+([^\s(]+)", source, re.IGNORECASE)
     candidate = match.group(1) if match else source.split(" ", 1)[0]
     if not candidate or candidate.lower() in {"unknown", "localhost"}:
         return None
