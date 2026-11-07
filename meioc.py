@@ -821,13 +821,29 @@ def find_dmarc_record(header_from: str) -> tuple[str | None, str]:
 
 
 def parse_dmarc_tags(record: str) -> dict[str, str]:
-    """Parse a DMARC semicolon-separated tag list."""
+    """Validate the RFC 7489 policy and alignment tags used by this evaluator."""
     tags = {}
     for field in record.split(";"):
-        if "=" not in field:
+        if not field.strip():
             continue
+        if "=" not in field:
+            raise ValueError("Malformed DMARC tag")
         name, value = field.split("=", 1)
-        tags[name.strip().lower()] = value.strip().lower()
+        name, value = name.strip().lower(), value.strip()
+        if name in tags:
+            raise ValueError(f"Duplicate DMARC tag: {name}")
+        tags[name] = value
+    if next(iter(tags), None) != "v" or tags.get("v") != "DMARC1":
+        raise ValueError("DMARC version must be the first tag and equal DMARC1")
+    if tags.get("p") not in {"none", "quarantine", "reject"}:
+        raise ValueError("Invalid or missing DMARC policy")
+    for name, allowed in (
+        ("sp", {"none", "quarantine", "reject"}),
+        ("aspf", {"r", "s"}),
+        ("adkim", {"r", "s"}),
+    ):
+        if name in tags and tags[name] not in allowed:
+            raise ValueError(f"Invalid DMARC {name} value")
     return tags
 
 
@@ -852,9 +868,10 @@ def verify_dmarc_online(
     if record is None:
         return dmarc_no_record(header_from)
 
-    tags = parse_dmarc_tags(record)
-    if tags.get("v") != "dmarc1" or "p" not in tags:
-        return dmarc_error("permerror", header_from, "Invalid DMARC record")
+    try:
+        tags = parse_dmarc_tags(record)
+    except ValueError as error:
+        return dmarc_error("permerror", header_from, str(error))
     spf_mode = "strict" if tags.get("aspf") == "s" else "relaxed"
     dkim_mode = "strict" if tags.get("adkim") == "s" else "relaxed"
     spf_pass = bool(

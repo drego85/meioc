@@ -151,6 +151,23 @@ class ParsingTests(unittest.TestCase):
 
 
 class RelayAndAuthenticationTests(unittest.TestCase):
+    def test_invalid_dmarc_policy_tags_are_rejected(self):
+        message = parse_message(b"From: sender@example.org\r\n\r\n")
+        for record in (
+            "v=DMARC1; p=invalid", "v=DMARC1; p=reject; aspf=invalid",
+            "v=DMARC1; p=reject; adkim=invalid", "v=DMARC1; p=reject; sp=invalid",
+            "v=DMARC1; p=none; p=reject", "p=none; v=DMARC1",
+        ):
+            with self.subTest(record=record), patch.object(
+                meioc, "find_dmarc_record", return_value=(record, "example.org")
+            ):
+                result = meioc.verify_dmarc_online(message, {}, {"signatures": []})
+                self.assertEqual(result["result"], "permerror")
+
+    def test_dmarc_report_uri_case_is_preserved(self):
+        tags = meioc.parse_dmarc_tags("v=DMARC1; p=none; rua=mailto:Reports@example.org")
+        self.assertEqual(tags["rua"], "mailto:Reports@example.org")
+
     def test_dmarc_preserves_authentication_uncertainty(self):
         message = parse_message(b"From: sender@example.org\r\n\r\n")
         with patch.object(meioc, "find_dmarc_record", return_value=(
