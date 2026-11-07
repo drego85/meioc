@@ -898,7 +898,7 @@ def verify_dmarc_online(
         "organizational_domain": organizational_domain(header_from),
         "policy_domain": policy_domain,
         "record": record,
-        "policy": tags.get("p"),
+        "policy": tags.get("sp", tags["p"]) if policy_domain != header_from else tags["p"],
         "alignment_mode": {"spf": spf_mode, "dkim": dkim_mode},
         "aligned_via": [
             method for method, passed in (("spf", spf_pass), ("dkim", dkim_pass))

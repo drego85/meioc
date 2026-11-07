@@ -151,6 +151,14 @@ class ParsingTests(unittest.TestCase):
 
 
 class RelayAndAuthenticationTests(unittest.TestCase):
+    def test_inherited_subdomain_policy_is_reported(self):
+        message = parse_message(b"From: sender@mail.example.org\r\n\r\n")
+        with patch.object(meioc, "find_dmarc_record", return_value=(
+            "v=DMARC1; p=none; sp=reject", "example.org"
+        )):
+            result = meioc.verify_dmarc_online(message, {}, {"signatures": []})
+        self.assertEqual(result["policy"], "reject")
+
     def setUp(self):
         # Online verification tests must never resolve real recipient domains.
         self.mx_lookup = patch.object(meioc, "mx_dns_hosts", return_value=[])
