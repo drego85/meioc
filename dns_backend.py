@@ -14,6 +14,19 @@ class DNSLookupError(RuntimeError):
     """Raised when every configured recursive resolver fails."""
 
 
+def validated_dns_response(request: DNSRecord, packet: bytes) -> DNSRecord:
+    """Reject replies that do not match this DNS transaction and question."""
+    response = DNSRecord.parse(packet)
+    if (
+        response.header.id != request.header.id
+        or not response.header.qr
+        or response.header.opcode != request.header.opcode
+        or response.questions != request.questions
+    ):
+        raise DNSLookupError("DNS response does not match the request")
+    return response
+
+
 def configured_nameservers() -> list[str]:
     """Read usable recursive resolvers from the system resolver file."""
     nameservers = []
@@ -36,8 +49,11 @@ def send_dns_request(request: DNSRecord, nameserver: str, timeout: float) -> DNS
     """Try UDP, then TCP when UDP times out or returns a truncated response."""
     deadline = time.monotonic() + timeout
     try:
-        packet = request.send(nameserver, timeout=max(timeout / 2, 0.1))
-        response = DNSRecord.parse(packet)
+        packet = request.send(
+            nameserver, timeout=max(timeout / 2, 0.1),
+            ipv6=ipaddress.ip_address(nameserver).version == 6,
+        )
+        response = validated_dns_response(request, packet)
         if not response.header.tc:
             return response
     except OSError:
@@ -45,8 +61,14 @@ def send_dns_request(request: DNSRecord, nameserver: str, timeout: float) -> DNS
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("DNS UDP and TCP budget exhausted")
-    packet = request.send(nameserver, tcp=True, timeout=remaining)
-    return DNSRecord.parse(packet)
+    packet = request.send(
+        nameserver, tcp=True, timeout=remaining,
+        ipv6=ipaddress.ip_address(nameserver).version == 6,
+    )
+    response = validated_dns_response(request, packet)
+    if response.header.tc:
+        raise DNSLookupError("Truncated TCP DNS response")
+    return response
 
 
 def resolve_records(name: str, qtype: str, timeout: float) -> list[Any]:
@@ -71,7 +93,7 @@ def resolve_records(name: str, qtype: str, timeout: float) -> list[Any]:
                 errors.append(f"{nameserver}: {RCODE[response.header.rcode]}")
                 continue
             return list(response.rr) + list(response.auth) + list(response.ar)
-        except (DNSError, OSError, ValueError) as error:
+        except (DNSLookupError, DNSError, OSError, ValueError) as error:
             errors.append(f"{nameserver}: {error}")
     detail = "; ".join(errors) or "deadline exceeded"
     raise DNSLookupError(detail)
