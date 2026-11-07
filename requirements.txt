@@ -1,5 +1,7 @@
-py3dns
-pyspf
-dkimpy
-tldextract
-beautifulsoup4
+py3dns>=4.0.2,<5
+pyspf>=2.0.14,<3
+dkimpy>=1.1.8,<2
+dnslib>=0.9.26,<1
+tldextract>=5.3,<6
+beautifulsoup4>=4.13,<5
+extract-msg>=0.56.1,<1

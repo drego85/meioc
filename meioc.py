@@ -1,377 +1,1410 @@
 #!/usr/bin/env python3
-# This file is part of Meioc.
-#
-# Meioc was made with ♥ by Andrea Draghetti
-#
-# This file may be licensed under the terms of of the
-# GNU General Public License Version 3 (the ``GPL'').
-#
+"""Extract SOC-relevant indicators and authentication evidence from EML files."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import ipaddress
+import json
 import os
 import re
-import spf
-import json
-import dkim
-import email
-import hashlib
-import warnings
-import argparse
-import ipaddress
-import encodings
-import tldextract
+import sys
+import time
 from email import policy
+from email.message import Message
+from email.parser import BytesParser
+from email.utils import getaddresses, parseaddr
+from pathlib import Path
+from typing import Any, Iterable
+from urllib.parse import urljoin, urlsplit
+
+import tldextract
 from bs4 import BeautifulSoup
-from email.utils import parseaddr
-from email.utils import getaddresses
-from email import message_from_bytes
-from email.message import EmailMessage
 
-encodings.aliases.aliases["cp_850"] = "cp850"
-warnings.simplefilter(action="ignore", category=FutureWarning)
-
-# Precompile the regex pattern for email extraction
-email_regex = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", re.IGNORECASE)
+from dns_backend import (
+    DNSLookupError,
+    dkim_dns_lookup,
+    mx_dns_hosts,
+    spf_dns_lookup,
+    txt_dns_records,
+)
 
 
-# Safely extracts a single email address from a structured or unstructured email header.
-def extract_email_address(header):
+VERSION = "2.1.0"
+DEFAULT_MAX_SIZE_MB = 50
+DNS_TIMEOUT_SECONDS = 10
+MSG_COMPOUND_FILE_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+HEADER_NAME_WITH_SPACE = re.compile(
+    rb"^([A-Za-z0-9!#$%&'*+\-.^_`|~]+)[ \t]+:", re.MULTILINE
+)
+URL_PATTERN = re.compile(r"(?:(?:https?|ftp)://)[^\s<>\"']+", re.IGNORECASE)
+ENVELOPE_FROM_PATTERN = re.compile(
+    r"envelope-from\s*[=:]\s*<?([^>\s;)]+)", re.IGNORECASE
+)
+HELO_PATTERN = re.compile(r"\bhelo[= ]([^\s;)]+)", re.IGNORECASE)
+SMTP_HELO_PATTERN = re.compile(r"smtp\.helo\s*=\s*([^;\s]+)", re.IGNORECASE)
+SMTP_PRA_PATTERN = re.compile(r"smtp\.pra\s*=\s*([^;\s]+)", re.IGNORECASE)
+SPF_IDENTITY_PATTERN = re.compile(r"\bidentity\s*=\s*([a-z]+)", re.IGNORECASE)
+AUTH_RESULT_PATTERN = {
+    "spf": re.compile(r"(?:^|;)\s*spf\s*=\s*([a-z]+)", re.IGNORECASE),
+    "dkim": re.compile(r"(?:^|;)\s*dkim\s*=\s*([a-z]+)", re.IGNORECASE),
+    "dmarc": re.compile(r"(?:^|;)\s*dmarc\s*=\s*([a-z]+)", re.IGNORECASE),
+}
+SMTP_MAILFROM_PATTERN = re.compile(
+    r"smtp\.mailfrom\s*=\s*<?([^;>\s]+)", re.IGNORECASE
+)
+CLIENT_IP_PATTERN = re.compile(r"client-ip\s*=\s*([^;\s]+)", re.IGNORECASE)
+HEADER_D_PATTERN = re.compile(r"header\.d\s*=\s*([^;\s]+)", re.IGNORECASE)
+HEADER_FROM_PATTERN = re.compile(r"header\.from\s*=\s*([^;\s]+)", re.IGNORECASE)
+DKIM_TAG_PATTERN = re.compile(
+    r"(?:^|;)\s*([a-z]+)\s*=\s*([^;]+)", re.IGNORECASE
+)
+TRAILING_URL_PUNCTUATION = ".,;:!?"
+RECEIVED_CLAUSE_NAMES = ("from", "by", "via", "with", "id", "for")
+
+# Use the PSL snapshot bundled with tldextract. Authentication DNS remains live.
+DOMAIN_EXTRACTOR = tldextract.TLDExtract(cache_dir=None, suffix_list_urls=())
+
+
+def ordered_unique(values: Iterable[str]) -> list[str]:
+    """Return non-empty unique strings in first-seen order."""
+    return list(dict.fromkeys(value for value in values if value))
+
+
+def normalize_malformed_headers(raw_message: bytes) -> bytes:
+    """Fix whitespace before header colons without changing the message body."""
+    for separator in (b"\r\n\r\n", b"\n\n"):
+        header, found, body = raw_message.partition(separator)
+        if found:
+            normalized = HEADER_NAME_WITH_SPACE.sub(rb"\1:", header)
+            return normalized + found + body
+    return HEADER_NAME_WITH_SPACE.sub(rb"\1:", raw_message)
+
+
+def extract_single_address(header: Any) -> str | None:
+    """Extract the first normalized mailbox from an email header."""
     if header is None:
         return None
-
     try:
-        # For structured headers like 'From', 'Sender', etc.
-        if hasattr(header, "addresses") and header.addresses:
+        if getattr(header, "addresses", None):
             return header.addresses[0].addr_spec.lower()
-
-        # For unstructured headers like 'Return-Path'
-        name, addr = parseaddr(str(header))
-        if addr:
-            return addr.lower()
-
-    except Exception:
-        pass
-
-    return None
-
-
-# Safely extracts multiple email addresses from a structured or unstructured email header.
-def extract_multiple_email_addresses(header):
-    if header is None:
+        address = parseaddr(str(header))[1]
+        return address.lower() if address else None
+    except (AttributeError, TypeError, ValueError):
         return None
 
-    try:
-        # Structured header: use .addresses
-        if hasattr(header, "addresses") and header.addresses:
-            raw = [addr.addr_spec.lower() for addr in header.addresses]
 
-        else:
-            # Unstructured: parse using getaddresses (handles comma-separated lists)
-            parsed = getaddresses([str(header)])
-            raw = [addr.lower() for name, addr in parsed if addr]
-
-        if raw:
-            # Remove duplicates and enumerate
-            return {i: email for i, email in enumerate(set(raw))}
-    except Exception:
-        pass
-
-    return None
+def extract_addresses(headers: Iterable[Any]) -> list[str]:
+    """Extract normalized mailboxes from one or more email headers."""
+    values = [str(header) for header in headers if header is not None]
+    addresses = (address.lower() for _, address in getaddresses(values) if address)
+    return ordered_unique(addresses)
 
 
-def normalize_headers(raw_email_bytes):
-    """
-    Normalize email headers by fixing spaces before ':' in a bytes-like email,
-    while preserving multi-line header continuation.
-    
-    Args:
-        raw_email_bytes (bytes): Raw email in bytes-like format.
-    Returns:
-        bytes: Normalized email in bytes-like format.
-    """
+def extract_headers(message: Message) -> dict[str, Any]:
+    """Extract message headers useful to a SOC analyst."""
+    def multiple(name: str) -> list[str]:
+        return extract_addresses(message.get_all(name, []))
 
-    raw_email = raw_email_bytes.decode("utf-8", errors="replace")
-    
-    lines = raw_email.splitlines()
-    normalized_lines = []
-    for i, line in enumerate(lines):
-        if line.startswith((' ', '\t')):
-            normalized_lines.append(line)
-        else:
-            if ": " in line or ":" in line:
-                header, sep, value = line.partition(":")
-                header = header.strip()
-                normalized_lines.append(f"{header}:{value}")
-            else:
-                normalized_lines.append(line)
-    
-    normalized_email = "\n".join(normalized_lines)
-    return normalized_email.encode("utf-8")
-
-def email_analysis(filename, exclude_private_ip, check_spf, check_dkim, file_output):
-    urls_list = []
-    hops_list = []
-    hops_list_ip = []
-    domains_list = []
-    attachments_ist = []
-    hops_list_ip_public = []
-
-    result_meioc = {
-        "filename": os.path.basename(filename),
-        "from": None,
-        "sender": None,
-        "x-sender": None,
-        "to": None,
-        "cc": None,
-        "bcc": None,
-        "envelope-to": None,
-        "delivered-to": None,
-        "return-path": None,
-        "subject": None,
-        "date": None,
-        "user-agent": None,
-        "x-mailer": None,
-        "x-originating-ip": None,
-        "relay_full": None,
-        "relay_ip": None,
-        "spf": None,
-        "dkim": None,
-        "urls": None,
-        "domains": None,
-        "attachments": None
+    return {
+        "from": extract_single_address(message.get("From")),
+        "sender": extract_single_address(message.get("Sender")),
+        "x_sender": extract_single_address(message.get("X-Sender")),
+        "to": multiple("To"),
+        "cc": multiple("Cc"),
+        "bcc": multiple("Bcc"),
+        "envelope_to": multiple("Envelope-To"),
+        "delivered_to": multiple("Delivered-To"),
+        "return_path": extract_single_address(message.get("Return-Path")),
+        "subject": str(message.get("Subject")) if message.get("Subject") else None,
+        "date": str(message.get("Date")) if message.get("Date") else None,
+        "user_agent": (
+            str(message.get("User-Agent")) if message.get("User-Agent") else None
+        ),
+        "x_mailer": str(message.get("X-Mailer")) if message.get("X-Mailer") else None,
+        "x_originating_ip": clean_originating_ip(message.get("X-Originating-IP")),
     }
 
-    # Open E-mail
-    with open(filename, "rb") as email_file:
-        raw_email_content = email_file.read()
 
-    # Parsing E-mail
-    if raw_email_content:
-        raw_email_content_normalized = normalize_headers(raw_email_content)
-        parsed_email = message_from_bytes(raw_email_content_normalized, policy=policy.default)
+def clean_originating_ip(value: Any) -> str | None:
+    """Normalize X-Originating-IP without treating it as a relay indicator."""
+    return str(value).strip().strip("[]") if value else None
 
-    if parsed_email:
 
-        #
-        # Header analysis
-        #
-
-        if parsed_email["Date"]:
-            result_meioc["date"] = parsed_email["Date"]
-
-        result_meioc["from"] = extract_email_address(parsed_email.get("From"))
-
-        result_meioc["sender"] = extract_email_address(parsed_email.get("Sender"))
-
-        result_meioc["x-sender"] = extract_email_address(parsed_email.get("X-Sender"))
-
-        result_meioc["bcc"] = extract_email_address(parsed_email.get("Bcc"))
-
-        result_meioc["delivered-to"] = extract_multiple_email_addresses(parsed_email.get("Delivered-To"))
-
-        result_meioc["return-path"] = extract_email_address(parsed_email.get("Return-Path"))
-
-        result_meioc["to"] = extract_multiple_email_addresses(parsed_email.get("To"))
-
-        result_meioc["cc"] = extract_multiple_email_addresses(parsed_email.get("Cc"))
-
-        result_meioc["envelope-to"] = extract_multiple_email_addresses(parsed_email.get("Envelope-to"))
-
-        result_meioc["user-agent"] = parsed_email.get("User-Agent")
-
-        result_meioc["x-mailer"] = parsed_email.get("X-Mailer")
-
-        x_orig = parsed_email.get("X-Originating-IP")
-        if x_orig:
-            result_meioc["x-originating-ip"] = x_orig.replace("[", "").replace("]", "")
-
-        if parsed_email["Subject"]:
-            result_meioc["subject"] = parsed_email["Subject"]
-        #
-        # Identify each relay
-        #
-        received = parsed_email.get_all("Received")
-        if received:
-            received.reverse()
-            for line in received:
-                hops = re.findall("from\s+(.*?)\s+by(.*?)(?:(?:with|via)(.*?)(?:id|$)|id|$)", line, re.DOTALL | re.X)
-                for hop in hops:
-
-                    # Fix for email servers that attach the IPv6 label directly to the IP address (e.g. "IPv6:::1")
-                    if "[IPv6:" in hop[0]:
-                        hop = (hop[0].replace("[IPv6:", "[IPv6: ", 1),) + hop[1:]
-
-                    # https://gist.github.com/dfee/6ed3a4b05cfe7a6faf40a2102408d5d8
-                    IPV4SEG  = r'(?:25[0-5]|(?:2[0-4]|1{0,1}[0-9]){0,1}[0-9])'
-                    IPV4ADDR = r'(?:(?:' + IPV4SEG + r'\.){3,3}' + IPV4SEG + r')'
-                    IPV6SEG  = r'(?:(?:[0-9a-fA-F]){1,4})'
-                    IPV6GROUPS = (
-                        r'(?:' + IPV6SEG + r':){7,7}' + IPV6SEG,                  # 1:2:3:4:5:6:7:8
-                        r'(?:' + IPV6SEG + r':){1,7}:',                           # 1::                                 1:2:3:4:5:6:7::
-                        r'(?:' + IPV6SEG + r':){1,6}:' + IPV6SEG,                 # 1::8               1:2:3:4:5:6::8   1:2:3:4:5:6::8
-                        r'(?:' + IPV6SEG + r':){1,5}(?::' + IPV6SEG + r'){1,2}',  # 1::7:8             1:2:3:4:5::7:8   1:2:3:4:5::8
-                        r'(?:' + IPV6SEG + r':){1,4}(?::' + IPV6SEG + r'){1,3}',  # 1::6:7:8           1:2:3:4::6:7:8   1:2:3:4::8
-                        r'(?:' + IPV6SEG + r':){1,3}(?::' + IPV6SEG + r'){1,4}',  # 1::5:6:7:8         1:2:3::5:6:7:8   1:2:3::8
-                        r'(?:' + IPV6SEG + r':){1,2}(?::' + IPV6SEG + r'){1,5}',  # 1::4:5:6:7:8       1:2::4:5:6:7:8   1:2::8
-                        IPV6SEG + r':(?:(?::' + IPV6SEG + r'){1,6})',             # 1::3:4:5:6:7:8     1::3:4:5:6:7:8   1::8
-                        r':(?:(?::' + IPV6SEG + r'){1,7}|:)',                     # ::2:3:4:5:6:7:8    ::2:3:4:5:6:7:8  ::8       ::
-                        r'fe80:(?::' + IPV6SEG + r'){0,4}%[0-9a-zA-Z]{1,}',       # fe80::7:8%eth0     fe80::7:8%1  (link-local IPv6 addresses with zone index)
-                        r'::(?i:ffff(?::0{1,4}){0,1}:){0,1}[^\s:]' + IPV4ADDR,     # ::255.255.255.255  ::ffff:255.255.255.255  ::ffff:0:255.255.255.255 (IPv4-mapped IPv6 addresses and IPv4-translated addresses)
-                        r'(?:' + IPV6SEG + r':){1,4}:[^\s:]' + IPV4ADDR,          # 2001:db8:3:4::192.0.2.33  64:ff9b::192.0.2.33 (IPv4-Embedded IPv6 Address)
-                    )
-                    IPV6ADDR = '|'.join(['(?:{})'.format(g) for g in IPV6GROUPS[::-1]])  # Reverse rows for greedy match
-
-                    # ipv4_address = re.findall(r"\b((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\b", hop[0])
-                    # ipv4_address = re.findall(r"[0-9]+(?:\.[0-9]+){3}", hop[0], re.DOTALL | re.X)
-                    ipv4_address = re.findall(IPV4ADDR, hop[0], re.DOTALL | re.X)
-    
-                    ipv6_address = re.findall(IPV6ADDR, hop[0], re.DOTALL | re.X)
-
-                    if ipv4_address:
-                        for ipv4 in ipv4_address:
-                            if ipaddress.ip_address(ipv4):
-                                hops_list_ip.append(ipv4)
-                                if not ipaddress.ip_address(ipv4).is_private:
-                                    hops_list_ip_public.append(ipv4)
-
-                    if ipv6_address:
-                        for ipv6 in ipv6_address:
-                            if ipaddress.ip_address(ipv6):
-                                hops_list_ip.append(ipv6)
-
-                                if not ipaddress.ip_address(ipv6).is_private:
-                                    hops_list_ip_public.append(ipv6)
-
-                    if hop[0]:
-                        hops_list.append(hop[0])
-
-        if hops_list:
-            result_meioc["relay_full"] = dict(zip(range(len(hops_list)), hops_list))
-
-        if hops_list_ip:
-            if exclude_private_ip:
-                result_meioc["relay_ip"] = dict(zip(range(len(hops_list_ip_public)), hops_list_ip_public))
-            else:
-                result_meioc["relay_ip"] = dict(zip(range(len(hops_list_ip)), hops_list_ip))
-
-        #
-        # Body analysis
-        #
-        for part in parsed_email.walk():
-            # Extracts each URL identified in the e-mail in text/plain format
-            if part.get_content_type() == "text/plain":
-                # Regex is based on what Diego Perini shared:
-                # https://gist.github.com/dperini/729294
-                url_regex = r'(?:(?:(?:https?|ftp):)?\/\/)(?:\S+(?::\S*)?@)?(?:(?!(?:10|127)(?:\.\d{1,3}){3})(?!(?:169\.254|192\.168)(?:\.\d{1,3}){2})(?!172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z0-9\u00a1-\uffff][a-z0-9\u00a1-\uffff_-]{0,62})?[a-z0-9\u00a1-\uffff]\.)+(?:[a-z\u00a1-\uffff]{2,}\.?))(?::\d{2,5})?(?:[/?#][^\s>]*)?'
-                urls_list.extend(re.findall(url_regex, part.get_content(), re.UNICODE | re.IGNORECASE | re.MULTILINE))
-            
-            # Extracts each URL identified in the e-mail in text/html format
-            if part.get_content_type() == "text/html":
-                # The try/except is necessary, if the body of the e-mail contains an incorrect or unencoded HTML code the script freeezes.
-                try:
-                    soup = BeautifulSoup(part.get_content(), "html.parser")
-                    tags = soup.find_all("a", href=True)
-
-                    # Handling the cases when a <base> tag is present.
-                    # If this is the case, we must prefix all the URLs by the value of <base>.
-                    tag_base = soup.find_all("base")
-                    if tag_base:
-                        # In browsers, it is the first <base> tag that is applied.
-                        base = tag_base[0].get("href")
-                    else:
-                        base = ''
-
-                    for url in tags:
-                        urls_list.append(base + url.get("href"))
-                except:
-                    pass
-
-            # Extracts information from each file attached to the e-mail
-            if part.get_filename():
-                if part.get_payload(decode=True):
-                    filename = part.get_filename()
-                    filemd5 = hashlib.md5(part.get_payload(decode=True)).hexdigest()
-                    filesha1 = hashlib.sha1(part.get_payload(decode=True)).hexdigest()
-                    filesha256 = hashlib.sha256(part.get_payload(decode=True)).hexdigest()
-
-                    attachments_ist.append({"filename": filename, "MD5": filemd5, "SHA1": filesha1,
-                                            "SHA256": filesha256})
-
-        # Identify each domain reported in the e-mail body
-        for url in urls_list:
-            analyzed_domain = tldextract.extract(url).top_domain_under_public_suffix
-            if analyzed_domain:
-                domains_list.append(analyzed_domain)
-
-        # Remove Duplicate from List
-        urls_list = list(set(urls_list))
-        domains_list = list(set(domains_list))
-
-        if urls_list:
-            result_meioc["urls"] = dict(zip(range(len(urls_list)), urls_list))
-            result_meioc["domains"] = dict(zip(range(len(domains_list)), domains_list))
-
-        if attachments_ist:
-            result_meioc["attachments"] = attachments_ist
-
-        #
-        # Verify the SPF record if requested
-        #
-        if check_spf:
-            test_spf = False
-            mail_from = result_meioc.get("from")
-            domain_from = mail_from.split("@")[1]
-            for ip in hops_list_ip_public:
-                if not test_spf and mail_from:
-                    try:
-                        result_spf = spf.check(ip, mail_from, domain_from)[0]
-                        if result_spf == "pass":
-                            test_spf = True
-                    except:
-                        pass
-
-            result_meioc["spf"] = test_spf
-
-        #
-        # Verify the DKIM record if requested
-        #
-        if check_dkim:
-            test_dkim = False
+def find_ip_addresses(value: str) -> list[str]:
+    """Find valid IPv4 and IPv6 addresses in a Received header fragment."""
+    candidates = re.findall(r"\[[^]]+\]|\([^)]*\)|[^\s]+", value)
+    addresses: list[str] = []
+    for candidate in candidates:
+        for token in re.split(r"[\[\](),]", candidate):
+            token = token.strip().removeprefix("IPv6:").split("%", 1)[0]
+            token = token.rstrip(":;")
             try:
-                dkim_result = dkim.verify(raw_email_content_normalized)
-                if dkim_result:
-                    test_dkim = True
-            except:
+                addresses.append(str(ipaddress.ip_address(token)))
+            except ValueError:
+                continue
+    return ordered_unique(addresses)
+
+
+def split_received_timestamp(value: str) -> tuple[str, str | None]:
+    """Split a Received timestamp at a semicolon outside comments/literals."""
+    parenthesis_depth = 0
+    bracket_depth = 0
+    quoted = False
+    escaped = False
+    for index, character in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\":
+            escaped = True
+            continue
+        if character == '"' and parenthesis_depth == 0 and bracket_depth == 0:
+            quoted = not quoted
+            continue
+        if quoted:
+            continue
+        if character == "(" and bracket_depth == 0:
+            parenthesis_depth += 1
+        elif character == ")" and parenthesis_depth:
+            parenthesis_depth -= 1
+        elif character == "[" and parenthesis_depth == 0:
+            bracket_depth += 1
+        elif character == "]" and bracket_depth:
+            bracket_depth -= 1
+        elif character == ";" and parenthesis_depth == 0 and bracket_depth == 0:
+            return value[:index].strip(), value[index + 1:].strip() or None
+    return value.strip(), None
+
+
+def received_clause_positions(value: str) -> list[tuple[int, int, str]]:
+    """Locate top-level RFC 5321 trace keywords without reading comments."""
+    positions: list[tuple[int, int, str]] = []
+    parenthesis_depth = 0
+    bracket_depth = 0
+    quoted = False
+    escaped = False
+    index = 0
+    lowered = value.lower()
+    while index < len(value):
+        character = value[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if character == "\\":
+            escaped = True
+            index += 1
+            continue
+        if character == '"' and parenthesis_depth == 0 and bracket_depth == 0:
+            quoted = not quoted
+            index += 1
+            continue
+        if quoted:
+            index += 1
+            continue
+        if character == "(" and bracket_depth == 0:
+            parenthesis_depth += 1
+            index += 1
+            continue
+        if character == ")" and parenthesis_depth:
+            parenthesis_depth -= 1
+            index += 1
+            continue
+        if character == "[" and parenthesis_depth == 0:
+            bracket_depth += 1
+            index += 1
+            continue
+        if character == "]" and bracket_depth:
+            bracket_depth -= 1
+            index += 1
+            continue
+        if parenthesis_depth or bracket_depth:
+            index += 1
+            continue
+
+        matched = None
+        for keyword in RECEIVED_CLAUSE_NAMES:
+            end = index + len(keyword)
+            if lowered[index:end] != keyword:
+                continue
+            before_ok = index == 0 or not (
+                value[index - 1].isalnum() or value[index - 1] in "-_"
+            )
+            after_ok = end == len(value) or not (
+                value[end].isalnum() or value[end] in "-_"
+            )
+            if before_ok and after_ok:
+                matched = (index, end, keyword)
+                break
+        if matched:
+            if positions or not value[:index].strip():
+                positions.append(matched)
+                index = matched[1]
+                continue
+        index += 1
+    return positions
+
+
+def parse_received_header(value: str) -> dict[str, str | None]:
+    """Parse common top-level Received clauses while preserving raw evidence."""
+    body, timestamp = split_received_timestamp(value)
+    positions = received_clause_positions(body)
+    clauses: dict[str, str | None] = {name: None for name in RECEIVED_CLAUSE_NAMES}
+    for position, (start, end, keyword) in enumerate(positions):
+        value_end = positions[position + 1][0] if position + 1 < len(positions) else len(body)
+        clause_value = body[end:value_end].strip()
+        if clauses[keyword] is None and clause_value:
+            clauses[keyword] = clause_value
+    clauses["date"] = timestamp
+    return clauses
+
+
+def extract_relays(message: Message, exclude_private: bool) -> dict[str, Any]:
+    """Extract Received hops and IP indicators in chronological order."""
+    hops: list[dict[str, Any]] = []
+    all_ips: list[str] = []
+    for raw_header in reversed(message.get_all("Received", [])):
+        header = " ".join(str(raw_header).split())
+        clauses = parse_received_header(header)
+        source = clauses["from"]
+        ips = find_ip_addresses(source or "")
+        hops.append(
+            {
+                "from": source,
+                "by": clauses["by"],
+                "via": clauses["via"],
+                "with": clauses["with"],
+                "id": clauses["id"],
+                "for": clauses["for"],
+                "date": clauses["date"],
+                "ips": ips,
+                "raw": header,
+            }
+        )
+        all_ips.extend(ips)
+
+    relay_ips = ordered_unique(all_ips)
+    if exclude_private:
+        relay_ips = [ip for ip in relay_ips if ipaddress.ip_address(ip).is_global]
+    return {"hops": hops, "ips": relay_ips}
+
+
+def extract_delivery_identity(message: Message) -> dict[str, str | None]:
+    """Infer the SMTP identity and IP at the receiving boundary."""
+    reported_identity = extract_reported_identity(message)
+    if reported_identity:
+        return reported_identity
+
+    envelope_sender = (
+        extract_single_address(message.get("Return-Path"))
+        or extract_single_address(message.get("X-Envelope-From"))
+    )
+    client_ip = None
+    helo = None
+
+    for raw_header in message.get_all("Received", []):
+        header = " ".join(str(raw_header).split())
+        source = parse_received_header(header)["from"]
+        if not source:
+            continue
+        global_ips = [
+            ip for ip in find_ip_addresses(source)
+            if ipaddress.ip_address(ip).is_global
+        ]
+        if not global_ips:
+            continue
+        client_ip = global_ips[0]
+        helo_match = HELO_PATTERN.search(source)
+        helo = helo_match.group(1) if helo_match else infer_source_hostname(source)
+        envelope_match = ENVELOPE_FROM_PATTERN.search(header)
+        if envelope_match:
+            envelope_sender = (
+                normalize_smtp_mailbox(envelope_match.group(1)) or envelope_sender
+            )
+        break
+
+    return {
+        "mail_from": envelope_sender,
+        "client_ip": client_ip,
+        "helo": helo,
+        "source": "received",
+    }
+
+
+def recipient_domains(message: Message) -> list[str]:
+    """Return recipient domains in SMTP-envelope then message-header order."""
+    addresses = []
+    for header_name in ("Envelope-To", "Delivered-To", "To", "Cc"):
+        addresses.extend(extract_addresses(message.get_all(header_name, [])))
+    return ordered_unique(
+        domain for address in addresses if (domain := mailbox_domain(address))
+    )
+
+
+def envelope_sender(message: Message) -> str | None:
+    """Return the best available RFC 5321 MAIL FROM identity."""
+    for header_name in ("Return-Path", "X-Envelope-From"):
+        address = extract_single_address(message.get(header_name))
+        if address:
+            return address
+    candidates = sorted(
+        spf_report_candidates(message),
+        key=lambda item: item["preference"],
+        reverse=True,
+    )
+    return select_reported_mail_from(candidates, None)
+
+
+def extract_recipient_mx_identity(
+    message: Message, timeout: float = DNS_TIMEOUT_SECONDS
+) -> dict[str, str | None] | None:
+    """Find the sender identity at the recipient domain's published MX edge."""
+    deadline = time.monotonic() + timeout
+    published_mx_hosts = set()
+    for domain in recipient_domains(message):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        published_mx_hosts.update(mx_dns_hosts(domain, remaining))
+    if not published_mx_hosts:
+        return None
+
+    mail_from = envelope_sender(message)
+    for raw_header in reversed(message.get_all("Received", [])):
+        header = " ".join(str(raw_header).split())
+        clauses = parse_received_header(header)
+        receiver = infer_source_hostname(clauses["by"] or "")
+        if not receiver or receiver.lower() not in published_mx_hosts:
+            continue
+        source = clauses["from"] or ""
+        global_ips = [
+            ip for ip in find_ip_addresses(source)
+            if ipaddress.ip_address(ip).is_global
+        ]
+        if not global_ips:
+            continue
+        envelope_match = ENVELOPE_FROM_PATTERN.search(header)
+        if envelope_match:
+            mail_from = normalize_smtp_mailbox(envelope_match.group(1)) or mail_from
+        return {
+            "mail_from": mail_from,
+            "client_ip": global_ips[0],
+            "helo": infer_source_hostname(source),
+            "source": "recipient-mx",
+            "receiver": receiver.lower(),
+        }
+    return None
+
+
+def extract_reported_identity(message: Message) -> dict[str, str | None] | None:
+    """Extract the SMTP identity observed by the original receiving system."""
+    received_ips = {
+        ip
+        for header in message.get_all("Received", [])
+        for ip in find_ip_addresses(parse_received_header(str(header))["from"] or "")
+    }
+    candidates = sorted(
+        spf_report_candidates(message),
+        key=lambda item: item["preference"],
+        reverse=True,
+    )
+    for candidate in candidates:
+        client_ip = candidate.get("client_ip")
+        if not client_ip:
+            continue
+        client_ip = client_ip.strip("[]")
+        try:
+            if not ipaddress.ip_address(client_ip).is_global:
+                continue
+        except ValueError:
+            continue
+        if client_ip not in received_ips:
+            continue
+        return {
+            "mail_from": candidate.get("mail_from")
+            or select_reported_mail_from(candidates, candidate.get("result")),
+            "client_ip": client_ip,
+            "helo": candidate.get("helo"),
+            "source": candidate["header"],
+        }
+    return None
+
+
+def select_reported_mail_from(
+    candidates: list[dict[str, Any]], result: str | None
+) -> str | None:
+    """Select MAIL FROM evidence, preferring the matching SPF result."""
+    for require_matching_result in (True, False):
+        for candidate in candidates:
+            if candidate.get("identity") != "mailfrom":
+                continue
+            if not candidate.get("mail_from"):
+                continue
+            if require_matching_result and candidate.get("result") != result:
+                continue
+            return candidate["mail_from"]
+    return None
+
+
+def infer_source_hostname(source: str) -> str | None:
+    """Infer the hostname following the Received header's from keyword."""
+    match = re.search(r"\bfrom\s+([^\s(]+)", source, re.IGNORECASE)
+    candidate = match.group(1) if match else source.split(" ", 1)[0]
+    if not candidate or candidate.lower() in {"unknown", "localhost"}:
+        return None
+    return candidate.strip("[]")
+
+
+def parse_authentication_result(
+    message: Message, method: str
+) -> dict[str, Any] | None:
+    """Read an authentication result reported by a receiving mail system."""
+    if method == "spf":
+        candidates = spf_report_candidates(message)
+        if not candidates:
+            return None
+        selected = max(candidates, key=lambda item: item["preference"])
+        return {
+            key: value
+            for key, value in selected.items()
+            if key != "preference"
+        }
+
+    pattern = AUTH_RESULT_PATTERN[method]
+    for header_name in ("Authentication-Results",):
+        for value in message.get_all(header_name, []):
+            text = " ".join(str(value).split())
+            match = pattern.search(text)
+            if not match:
+                continue
+            prefix = text.split(";", 1)[0].strip()
+            authserv_id = prefix if prefix and "=" not in prefix else None
+            return {
+                "result": match.group(1).lower(),
+                "source": "header",
+                "independent": False,
+                "authserv_id": authserv_id,
+                "header": header_name.lower(),
+                "mail_from": normalize_smtp_mailbox(
+                    regex_value(SMTP_MAILFROM_PATTERN, text)
+                ),
+                "client_ip": regex_value(CLIENT_IP_PATTERN, text),
+                "header_domain": regex_value(HEADER_D_PATTERN, text),
+                "header_from": regex_value(HEADER_FROM_PATTERN, text),
+            }
+    return None
+
+
+def normalize_smtp_mailbox(value: str | None) -> str | None:
+    """Normalize wrappers around an SMTP mailbox or bare identity domain."""
+    if value is None:
+        return None
+    candidate = value.strip()
+    wrappers = (("<", ">"), ('"', '"'), ("'", "'"), ("(", ")"))
+    changed = True
+    while candidate and changed:
+        changed = False
+        for opening, closing in wrappers:
+            if candidate.startswith(opening) and candidate.endswith(closing):
+                candidate = candidate[1:-1].strip()
+                changed = True
+                break
+    # Some Received/Received-SPF syntaxes leave a single parenthesis in the
+    # regular-expression capture (for example envelope-from=(user@example)).
+    candidate = candidate.strip("<>()").strip()
+    if not candidate:
+        return None
+    parsed = parseaddr(candidate)[1]
+    return (parsed or candidate).lower()
+
+
+def spf_report_candidates(message: Message) -> list[dict[str, Any]]:
+    """Return reported SPF results ranked by RFC 7208 identity relevance."""
+    candidates: list[dict[str, Any]] = []
+    for value in message.get_all("Authentication-Results", []):
+        text = " ".join(str(value).split())
+        prefix = text.split(";", 1)[0].strip()
+        authserv_id = prefix if prefix and "=" not in prefix else None
+        matches = list(AUTH_RESULT_PATTERN["spf"].finditer(text))
+        for match in matches:
+            segment_end = text.find(";", match.end())
+            segment = text[match.start(): segment_end if segment_end >= 0 else None]
+            mail_from = normalize_smtp_mailbox(
+                regex_value(SMTP_MAILFROM_PATTERN, segment)
+            )
+            helo = regex_value(SMTP_HELO_PATTERN, segment)
+            pra = regex_value(SMTP_PRA_PATTERN, segment)
+            if mail_from:
+                identity = "mailfrom"
+            elif helo:
+                identity = "helo"
+            elif pra:
+                identity = "pra"
+            else:
+                identity = None
+            preference = {"mailfrom": 40, "helo": 30, None: 20, "pra": 10}[identity]
+            candidates.append(
+                {
+                    "result": match.group(1).lower(),
+                    "source": "header",
+                    "independent": False,
+                    "authserv_id": authserv_id,
+                    "header": "authentication-results",
+                    "identity": identity,
+                    "mail_from": mail_from,
+                    "helo": helo,
+                    "client_ip": regex_value(CLIENT_IP_PATTERN, segment),
+                    "header_domain": None,
+                    "header_from": None,
+                    "preference": preference,
+                }
+            )
+
+    for value in message.get_all("Received-SPF", []):
+        text = " ".join(str(value).split())
+        match = re.match(r"\s*([a-z]+)", text, re.IGNORECASE)
+        if not match:
+            continue
+        identity = (regex_value(SPF_IDENTITY_PATTERN, text) or "").lower() or None
+        mail_from = normalize_smtp_mailbox(
+            regex_value(SMTP_MAILFROM_PATTERN, text)
+            or regex_value(ENVELOPE_FROM_PATTERN, text)
+        )
+        helo = regex_value(SMTP_HELO_PATTERN, text) or regex_value(HELO_PATTERN, text)
+        if identity == "mailfrom" or (mail_from and identity != "pra"):
+            preference = 35
+        elif identity == "helo" or helo:
+            preference = 25
+        elif identity == "pra":
+            preference = 5
+        else:
+            preference = 15
+        candidates.append(
+            {
+                "result": match.group(1).lower(),
+                "source": "header",
+                "independent": False,
+                "authserv_id": None,
+                "header": "received-spf",
+                "identity": identity,
+                "mail_from": mail_from,
+                "helo": helo,
+                "client_ip": regex_value(CLIENT_IP_PATTERN, text),
+                "header_domain": None,
+                "header_from": None,
+                "preference": preference,
+            }
+        )
+    return candidates
+
+
+def regex_value(pattern: re.Pattern[str], value: str) -> str | None:
+    """Return the first captured value from a regular expression."""
+    match = pattern.search(value)
+    return match.group(1) if match else None
+
+
+def extract_dkim_signatures(message: Message) -> list[dict[str, str | None]]:
+    """Extract relevant tags from every DKIM signature."""
+    signatures = []
+    for value in message.get_all("DKIM-Signature", []):
+        tags = {
+            key.lower(): item.strip()
+            for key, item in DKIM_TAG_PATTERN.findall(str(value))
+        }
+        signatures.append(
+            {
+                "domain": tags.get("d"),
+                "selector": tags.get("s"),
+                "identity": tags.get("i"),
+                "algorithm": tags.get("a"),
+            }
+        )
+    return signatures
+
+
+def mailbox_domain(value: str | None) -> str | None:
+    """Return the lower-case domain from a mailbox or bare domain identity."""
+    if not value:
+        return None
+    candidate = value.strip().strip("<>").lower()
+    return candidate.rsplit("@", 1)[-1].rstrip(".") or None
+
+
+def organizational_domain(domain: str | None) -> str | None:
+    """Return the PSL-based organizational domain used for relaxed alignment."""
+    if not domain:
+        return None
+    extracted = DOMAIN_EXTRACTOR(domain)
+    return extracted.top_domain_under_public_suffix or domain
+
+
+def domain_alignment(identity_domain: str | None, header_from: str | None) -> dict[str, Any]:
+    """Calculate strict and relaxed RFC 7489 identifier alignment."""
+    strict = bool(identity_domain and header_from and identity_domain == header_from)
+    identity_org = organizational_domain(identity_domain)
+    header_org = organizational_domain(header_from)
+    relaxed = bool(identity_org and header_org and identity_org == header_org)
+    return {
+        "identity_domain": identity_domain,
+        "header_from_domain": header_from,
+        "strict": strict,
+        "relaxed": relaxed,
+    }
+
+
+def authentication_boolean(result: str | None) -> bool | None:
+    """Map an authentication result to true, false, or indeterminate."""
+    if result == "pass":
+        return True
+    if result in {
+        "not_available",
+        "not_verifiable",
+        "signed_unverified",
+        "temperror",
+    }:
+        return None
+    return False
+
+
+def add_alignment_assessment(
+    message: Message, spf_result: dict[str, Any], dkim_result: dict[str, Any]
+) -> None:
+    """Annotate SPF and DKIM results with authentication and alignment."""
+    header_from = mailbox_domain(extract_single_address(message.get("From")))
+    identity = spf_result.get("identity", {})
+    spf_domain = mailbox_domain(identity.get("mail_from") or identity.get("helo"))
+    spf_result["authenticated"] = authentication_boolean(spf_result.get("result"))
+    spf_result["alignment"] = domain_alignment(spf_domain, header_from)
+
+    signatures = dkim_result.get("signatures", [])
+    for signature in signatures:
+        signature["alignment"] = domain_alignment(
+            mailbox_domain(signature.get("domain")), header_from
+        )
+    domains = [mailbox_domain(item.get("domain")) for item in signatures]
+    reported = dkim_result.get("reported") or dkim_result
+    if not domains and reported.get("header_domain"):
+        domains.append(mailbox_domain(reported["header_domain"]))
+    alignments = [domain_alignment(domain, header_from) for domain in domains]
+    dkim_result["authenticated"] = authentication_boolean(dkim_result.get("result"))
+    dkim_result["alignment"] = {
+        "header_from_domain": header_from,
+        "strict": any(item["strict"] for item in alignments),
+        "relaxed": any(item["relaxed"] for item in alignments),
+    }
+
+
+def dkim_without_original_bytes(message: Message) -> dict[str, Any]:
+    """Report DKIM presence when converted MSG lacks original MIME bytes."""
+    signatures = extract_dkim_signatures(message)
+    if not signatures:
+        return {
+            "result": "none",
+            "source": "message",
+            "independent": True,
+            "signatures": [],
+            "reason": "No DKIM-Signature header is present.",
+        }
+    return {
+        "result": "not_verifiable",
+        "source": "converted_message",
+        "independent": False,
+        "signatures": signatures,
+        "reason": (
+            "The MSG container does not preserve the original RFC 5322 bytes "
+            "required for DKIM verification."
+        ),
+    }
+
+
+def offline_authentication(
+    message: Message, original_mime_available: bool = True
+) -> dict[str, Any]:
+    """Report authentication evidence without making DNS queries."""
+    identity = extract_delivery_identity(message)
+    spf_result = parse_authentication_result(message, "spf")
+    if spf_result is None:
+        spf_result = {
+            "result": "not_available",
+            "source": "none",
+            "independent": False,
+            "reason": "No SPF result is present in the message headers.",
+        }
+    spf_result["identity"] = identity
+
+    signatures = extract_dkim_signatures(message)
+    dkim_result = parse_authentication_result(message, "dkim")
+    if dkim_result is None:
+        if not original_mime_available:
+            dkim_result = dkim_without_original_bytes(message)
+        else:
+            dkim_result = {
+                "result": "signed_unverified" if signatures else "none",
+                "source": "signature" if signatures else "none",
+                "independent": False,
+                "reason": (
+                    "A signature is present but DNS verification is disabled."
+                    if signatures
+                    else "No DKIM signature or reported result is present."
+                ),
+            }
+    dkim_result["signatures"] = signatures
+    add_alignment_assessment(message, spf_result, dkim_result)
+    dmarc_result = parse_authentication_result(message, "dmarc") or {
+        "result": "not_available",
+        "source": "none",
+        "independent": False,
+        "reason": "No DMARC result is present and DNS verification is disabled.",
+    }
+    return {
+        "mode": "offline",
+        "spf": spf_result,
+        "dkim": dkim_result,
+        "dmarc": dmarc_result,
+    }
+
+
+def online_authentication(
+    message: Message, raw_message: bytes, original_mime_available: bool = True
+) -> dict[str, Any]:
+    """Perform independent SPF and DKIM verification using live DNS."""
+    spf_result = verify_spf_online(message)
+    spf_result["reported"] = parse_authentication_result(message, "spf")
+    dkim_result = (
+        verify_dkim_online(message, raw_message)
+        if original_mime_available
+        else dkim_without_original_bytes(message)
+    )
+    dkim_result["reported"] = parse_authentication_result(message, "dkim")
+    add_alignment_assessment(message, spf_result, dkim_result)
+    dmarc_result = verify_dmarc_online(message, spf_result, dkim_result)
+    dmarc_result["reported"] = parse_authentication_result(message, "dmarc")
+    return {
+        "mode": "online",
+        "spf": spf_result,
+        "dkim": dkim_result,
+        "dmarc": dmarc_result,
+    }
+
+
+def find_dmarc_record(header_from: str) -> tuple[str | None, str]:
+    """Discover the DMARC record at the author or organizational domain."""
+    organizational = organizational_domain(header_from) or header_from
+    candidates = ordered_unique([header_from, organizational])
+    for candidate in candidates:
+        records = txt_dns_records(f"_dmarc.{candidate}", DNS_TIMEOUT_SECONDS)
+        dmarc_records = [
+            value.decode("ascii", errors="replace")
+            for value in records
+            if value.lstrip().lower().startswith(b"v=dmarc1")
+        ]
+        if len(dmarc_records) > 1:
+            raise ValueError(f"Multiple DMARC records found at {candidate}")
+        if dmarc_records:
+            return dmarc_records[0], candidate
+    return None, organizational
+
+
+def parse_dmarc_tags(record: str) -> dict[str, str]:
+    """Parse a DMARC semicolon-separated tag list."""
+    tags = {}
+    for field in record.split(";"):
+        if "=" not in field:
+            continue
+        name, value = field.split("=", 1)
+        tags[name.strip().lower()] = value.strip().lower()
+    return tags
+
+
+def verify_dmarc_online(
+    message: Message, spf_result: dict[str, Any], dkim_result: dict[str, Any]
+) -> dict[str, Any]:
+    """Evaluate DMARC using independently verified aligned identifiers."""
+    header_from = mailbox_domain(extract_single_address(message.get("From")))
+    if not header_from:
+        return {
+            "result": "not_available",
+            "source": "message",
+            "independent": True,
+            "reason": "A valid RFC 5322 From domain is required.",
+        }
+    try:
+        record, policy_domain = find_dmarc_record(header_from)
+    except DNSLookupError as error:
+        return dmarc_error("temperror", header_from, str(error))
+    except ValueError as error:
+        return dmarc_error("permerror", header_from, str(error))
+    if record is None:
+        return dmarc_no_record(header_from)
+
+    tags = parse_dmarc_tags(record)
+    if tags.get("v") != "dmarc1" or "p" not in tags:
+        return dmarc_error("permerror", header_from, "Invalid DMARC record")
+    spf_mode = "strict" if tags.get("aspf") == "s" else "relaxed"
+    dkim_mode = "strict" if tags.get("adkim") == "s" else "relaxed"
+    spf_pass = bool(
+        spf_result.get("authenticated")
+        and spf_result.get("alignment", {}).get(spf_mode)
+    )
+    dkim_pass = any(
+        signature.get("verified")
+        and signature.get("alignment", {}).get(dkim_mode)
+        for signature in dkim_result.get("signatures", [])
+    )
+    return {
+        "result": "pass" if spf_pass or dkim_pass else "fail",
+        "source": "dns",
+        "independent": True,
+        "header_from_domain": header_from,
+        "organizational_domain": organizational_domain(header_from),
+        "policy_domain": policy_domain,
+        "record": record,
+        "policy": tags.get("p"),
+        "alignment_mode": {"spf": spf_mode, "dkim": dkim_mode},
+        "aligned_via": [
+            method for method, passed in (("spf", spf_pass), ("dkim", dkim_pass))
+            if passed
+        ],
+    }
+
+
+def dmarc_no_record(header_from: str) -> dict[str, Any]:
+    """Build the result used when neither author nor organizational policy exists."""
+    return {
+        "result": "none",
+        "source": "dns",
+        "independent": True,
+        "header_from_domain": header_from,
+        "organizational_domain": organizational_domain(header_from),
+        "record": None,
+        "reason": "No DMARC record was found.",
+    }
+
+
+def dmarc_error(result: str, header_from: str, reason: str) -> dict[str, Any]:
+    """Build a consistent DMARC DNS error result."""
+    return {
+        "result": result,
+        "source": "dns",
+        "independent": True,
+        "header_from_domain": header_from,
+        "organizational_domain": organizational_domain(header_from),
+        "reason": reason,
+    }
+
+
+def make_spf_dns_lookup(spf_module: Any):
+    """Adapt the bounded resolver to pyspf's callback and error types."""
+    def dns_lookup(name: str, qtype: str, strict: bool, timeout: float):
+        try:
+            return spf_dns_lookup(name, qtype, strict, timeout)
+        except DNSLookupError as error:
+            raise spf_module.TempError(f"DNS: {error}") from error
+
+    return dns_lookup
+
+
+def verify_spf_online(message: Message) -> dict[str, Any]:
+    """Evaluate SPF for the receiving-boundary IP and MAIL FROM identity."""
+    import spf
+    try:
+        identity = extract_recipient_mx_identity(message) or extract_delivery_identity(
+            message
+        )
+    except DNSLookupError:
+        identity = extract_delivery_identity(message)
+    client_ip = identity["client_ip"]
+    mail_from = identity["mail_from"]
+    helo = identity["helo"]
+    if not client_ip or not (mail_from or helo):
+        return {
+            "result": "not_available",
+            "source": "dns",
+            "independent": True,
+            "identity": identity,
+            "reason": "A client IP and MAIL FROM or HELO identity are required.",
+        }
+
+    sender = mail_from or f"postmaster@{helo}"
+    original_lookup = spf.DNSLookup
+    try:
+        spf.DNSLookup = make_spf_dns_lookup(spf)
+        result, explanation = spf.check2(
+            i=client_ip,
+            s=sender,
+            h=helo or "unknown",
+            timeout=DNS_TIMEOUT_SECONDS,
+            querytime=DNS_TIMEOUT_SECONDS,
+        )
+        return {
+            "result": result.lower(),
+            "source": "dns",
+            "independent": True,
+            "identity": identity,
+            "explanation": explanation,
+        }
+    except Exception as error:  # pyspf exposes resolver-specific exception types
+        return {
+            "result": "temperror",
+            "source": "dns",
+            "independent": True,
+            "identity": identity,
+            "reason": f"{type(error).__name__}: {error}",
+        }
+    finally:
+        spf.DNSLookup = original_lookup
+
+
+def make_dkim_dns_lookup(
+    dkim_module: Any,
+    queried_keys: dict[str, bytes | None],
+    dns_errors: dict[str, str],
+):
+    """Adapt the bounded resolver to dkimpy while retaining diagnostics."""
+    def dns_lookup(name: bytes, timeout: float = DNS_TIMEOUT_SECONDS):
+        key_name = name.decode("ascii").rstrip(".").lower()
+        try:
+            value = dkim_dns_lookup(name, timeout)
+            queried_keys[key_name] = value
+            return value
+        except DNSLookupError as error:
+            dns_errors[key_name] = str(error)
+            raise dkim_module.DnsTimeoutError(str(error)) from error
+
+    return dns_lookup
+
+
+def verify_dkim_online(message: Message, raw_message: bytes) -> dict[str, Any]:
+    """Verify all DKIM signatures over the unmodified message bytes."""
+    import dkim
+
+    signatures = extract_dkim_signatures(message)
+    if not signatures:
+        return {
+            "result": "none",
+            "source": "message",
+            "independent": True,
+            "signatures": [],
+            "reason": "No DKIM-Signature header is present.",
+        }
+
+    verifier = dkim.DKIM(raw_message, timeout=DNS_TIMEOUT_SECONDS)
+    queried_keys: dict[str, bytes | None] = {}
+    dns_errors: dict[str, str] = {}
+    dns_lookup = make_dkim_dns_lookup(dkim, queried_keys, dns_errors)
+
+    checks = []
+    for index, signature in enumerate(signatures):
+        check: dict[str, Any] = dict(signature)
+        try:
+            check["verified"] = bool(verifier.verify(idx=index, dnsfunc=dns_lookup))
+            if not check["verified"]:
+                key_name = dkim_key_name(check)
+                if key_name in dns_errors:
+                    check["reason"] = "dns_error"
+                    check["error"] = dns_errors[key_name]
+                else:
+                    check["reason"] = dkim_failure_reason(check, queried_keys)
+        except Exception as error:  # dkimpy exposes resolver-specific exceptions
+            check["verified"] = False
+            check["error"] = f"{type(error).__name__}: {error}"
+        checks.append(check)
+
+    return {
+        "result": dkim_overall_result(checks),
+        "source": "dns",
+        "independent": True,
+        "signatures": checks,
+    }
+
+
+def dkim_overall_result(checks: list[dict[str, Any]]) -> str:
+    """Aggregate signatures without collapsing DNS uncertainty into failure."""
+    if any(item["verified"] for item in checks):
+        return "pass"
+    if any(item.get("reason") == "dns_error" for item in checks):
+        return "temperror"
+    return "fail"
+
+
+def dkim_failure_reason(
+    signature: dict[str, Any], queried_keys: dict[str, bytes | None]
+) -> str:
+    """Explain common DKIM verification failures using the queried key record."""
+    key_name = dkim_key_name(signature)
+    if not key_name:
+        return "signature_missing_domain_or_selector"
+    if key_name not in queried_keys:
+        return "signature_did_not_verify"
+    key_record = queried_keys[key_name]
+    if key_record is None:
+        return "public_key_not_found"
+    text = key_record.decode("ascii", errors="replace")
+    if re.search(r"(?:^|;)\s*p\s*=\s*(?:;|$)", text):
+        return "public_key_revoked"
+    return "signature_did_not_verify"
+
+
+def dkim_key_name(signature: dict[str, Any]) -> str:
+    """Build the DNS owner name for a parsed DKIM signature."""
+    domain = signature.get("domain")
+    selector = signature.get("selector")
+    return f"{selector}._domainkey.{domain}".lower() if domain and selector else ""
+
+
+def extract_urls_from_text(content: str) -> list[str]:
+    """Extract ordinary, non-defanged URLs from plain text."""
+    return [clean_url(match.group(0)) for match in URL_PATTERN.finditer(content)]
+
+
+def clean_url(value: str) -> str:
+    """Remove punctuation commonly attached to a URL in prose."""
+    value = value.rstrip(TRAILING_URL_PUNCTUATION)
+    while value.endswith(")") and value.count("(") < value.count(")"):
+        value = value[:-1]
+    return value
+
+
+def extract_urls_from_html(content: str) -> list[str]:
+    """Extract supported absolute URLs from security-relevant HTML attributes."""
+    soup = BeautifulSoup(content, "html.parser")
+    base_tag = soup.find("base", href=True)
+    base = str(base_tag.get("href")) if base_tag else ""
+    attributes = {
+        "a": "href",
+        "form": "action",
+        "iframe": "src",
+        "img": "src",
+        "link": "href",
+        "script": "src",
+    }
+    urls = []
+    for tag_name, attribute in attributes.items():
+        for tag in soup.find_all(tag_name, **{attribute: True}):
+            candidate = str(tag.get(attribute)).strip()
+            resolved = urljoin(base, candidate) if base else candidate
+            if is_supported_url(resolved):
+                urls.append(clean_url(resolved))
+    urls.extend(extract_urls_from_text(soup.get_text(" ")))
+    return urls
+
+
+def is_supported_url(value: str) -> bool:
+    """Accept absolute HTTP(S)/FTP URLs and reject mailto and script values."""
+    parsed = urlsplit(value)
+    return parsed.scheme.lower() in {"http", "https", "ftp"} and bool(parsed.hostname)
+
+
+def extract_indicators(message: Message) -> dict[str, Any]:
+    """Extract URLs, registrable domains, and attachment hashes."""
+    urls: list[str] = []
+    attachments: list[dict[str, Any]] = []
+    for part in message.walk():
+        content_type = part.get_content_type()
+        if content_type in {"text/plain", "text/html"}:
+            try:
+                content = part.get_content()
+                if content_type == "text/plain":
+                    urls.extend(extract_urls_from_text(content))
+                else:
+                    urls.extend(extract_urls_from_html(content))
+            except (LookupError, TypeError, UnicodeError, ValueError):
                 pass
 
-            result_meioc["dkim"] = test_dkim
+        filename = part.get_filename()
+        if filename:
+            payload = part.get_payload(decode=True)
+            if payload is not None:
+                attachments.append(
+                    hash_attachment(str(filename), payload, part.get_content_type())
+                )
+
+    urls = ordered_unique(url for url in urls if is_supported_url(url))
+    domains = ordered_unique(extract_domain(url) for url in urls)
+    return {"urls": urls, "domains": domains, "attachments": attachments}
 
 
-        if file_output:
-            with open(file_output, "w") as f:
-                json.dump(result_meioc, f, indent=4)
-            print("[!] Output saved in: %s" % file_output)
-        else:
-            print(json.dumps(result_meioc, indent=4))
+def extract_domain(url: str) -> str:
+    """Return a registrable domain, but never promote an IP to a domain IoC."""
+    hostname = urlsplit(url).hostname
+    if not hostname:
+        return ""
+    try:
+        ipaddress.ip_address(hostname)
+        return ""
+    except ValueError:
+        extracted = DOMAIN_EXTRACTOR(hostname)
+        return extracted.top_domain_under_public_suffix or (extracted.domain or "")
 
 
-def main():
-    version = "1.4"
-    parser = argparse.ArgumentParser()
-    parser.add_argument("filename", help="Analyze an e-mail (.eml format)")
-    parser.add_argument("-x", "--exclude-private-ip", action="store_true", dest="excprip",
-                        help="Exclude private IPs from the report")
-    parser.add_argument("-s", "--spf", action="store_true", dest="spf",
-                        help="Check SPF Records")
-    parser.add_argument("-d", "--dkim", action="store_true", dest="dkim",
-                        help="Check DKIM Records")
-    parser.add_argument("-o", "--output", dest="file_output",
-                        help="Write output to <file>")
-    parser.add_argument("-v", "--version", action="version", version="%(prog)s " + version)
+def hash_attachment(
+    filename: str, payload: bytes, content_type: str
+) -> dict[str, Any]:
+    """Calculate common IoC hashes for one decoded attachment payload."""
+    return {
+        "filename": filename,
+        "content_type": content_type,
+        "size": len(payload),
+        "md5": hashlib.md5(payload).hexdigest(),
+        "sha1": hashlib.sha1(payload).hexdigest(),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
 
-    arguments = parser.parse_args()
 
-    if arguments.filename:
-        email_analysis(arguments.filename, arguments.excprip, arguments.spf ,arguments.dkim, arguments.file_output)
+def analyze_bytes(
+    raw_message: bytes,
+    filename: str,
+    exclude_private_ip: bool,
+    online_auth: bool,
+) -> dict[str, Any]:
+    """Analyze raw RFC 5322 bytes and return a schema v2 report."""
+    if not raw_message:
+        raise ValueError("The email file is empty.")
+    parser_input = normalize_malformed_headers(raw_message)
+    message = BytesParser(policy=policy.default).parsebytes(parser_input)
+    return analyze_message(
+        message,
+        raw_message,
+        filename,
+        exclude_private_ip,
+        online_auth,
+        source_format="eml",
+        original_mime_available=True,
+    )
+
+
+def analyze_message(
+    message: Message,
+    verification_bytes: bytes,
+    filename: str,
+    exclude_private_ip: bool,
+    online_auth: bool,
+    source_format: str,
+    original_mime_available: bool,
+) -> dict[str, Any]:
+    """Analyze a parsed message while retaining source-format capabilities."""
+    authentication = (
+        online_authentication(message, verification_bytes, original_mime_available)
+        if online_auth
+        else offline_authentication(message, original_mime_available)
+    )
+    return {
+        "schema_version": 2,
+        "source_format": source_format,
+        "filename": os.path.basename(filename),
+        "headers": extract_headers(message),
+        "relays": extract_relays(message, exclude_private_ip),
+        "authentication": authentication,
+        "indicators": extract_indicators(message),
+    }
+
+
+def analyze_msg_bytes(
+    raw_message: bytes,
+    filename: str,
+    exclude_private_ip: bool,
+    online_auth: bool,
+    maximum_converted_bytes: int,
+) -> dict[str, Any]:
+    """Convert an Outlook MSG container into the common in-memory model."""
+    if not raw_message.startswith(MSG_COMPOUND_FILE_SIGNATURE):
+        raise ValueError("The .msg file is not a valid CFBF compound document.")
+    try:
+        import extract_msg
+
+        with extract_msg.openMsg(raw_message) as outlook_message:
+            converted = outlook_message.asEmailMessage()
+            converted_bytes = converted.as_bytes(policy=policy.default)
+    except Exception as error:
+        raise ValueError(
+            f"Unable to parse Outlook MSG: {type(error).__name__}: {error}"
+        ) from error
+    if len(converted_bytes) > maximum_converted_bytes:
+        raise ValueError(
+            f"Converted MSG is {len(converted_bytes)} bytes; "
+            f"the configured limit is {maximum_converted_bytes} bytes."
+        )
+    message = BytesParser(policy=policy.default).parsebytes(converted_bytes)
+    return analyze_message(
+        message,
+        converted_bytes,
+        filename,
+        exclude_private_ip,
+        online_auth,
+        source_format="msg",
+        original_mime_available=False,
+    )
+
+
+def analyze_file(
+    filename: str,
+    exclude_private_ip: bool = False,
+    online_auth: bool = True,
+    max_size_mb: int = DEFAULT_MAX_SIZE_MB,
+) -> dict[str, Any]:
+    """Read and analyze an EML or MSG file subject to a size limit."""
+    path = Path(filename)
+    size = path.stat().st_size
+    maximum = max_size_mb * 1024 * 1024
+    if size > maximum:
+        raise ValueError(
+            f"Email is {size} bytes; the configured limit is {maximum} bytes."
+        )
+    raw_message = path.read_bytes()
+    if path.suffix.lower() == ".msg":
+        return analyze_msg_bytes(
+            raw_message,
+            str(path),
+            exclude_private_ip,
+            online_auth,
+            maximum_converted_bytes=maximum,
+        )
+    return analyze_bytes(raw_message, str(path), exclude_private_ip, online_auth)
+
+
+def compact_alignment(authentication: dict[str, Any]) -> str:
+    """Reduce strict/relaxed alignment flags to one readable value."""
+    alignment = authentication.get("alignment", {})
+    if alignment.get("strict"):
+        return "strict"
+    if alignment.get("relaxed"):
+        return "relaxed"
+    return "none"
+
+
+def compact_authentication(authentication: dict[str, Any]) -> dict[str, Any]:
+    """Keep authentication outcome and alignment without diagnostic detail."""
+    result = {"result": authentication.get("result", "not_available")}
+    if "alignment" in authentication:
+        result["alignment"] = compact_alignment(authentication)
+    policy = authentication.get("policy")
+    if policy:
+        result["policy"] = policy
+    aligned_via = authentication.get("aligned_via")
+    if aligned_via:
+        result["aligned_via"] = aligned_via
+    return result
+
+
+def compact_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Build the concise default report used by SOC triage workflows."""
+    headers = report["headers"]
+    relays = report["relays"]
+    authentication = report["authentication"]
+    indicators = report["indicators"]
+    output: dict[str, Any] = {
+        "schema_version": report["schema_version"],
+        "format": "compact",
+        "source_format": report["source_format"],
+        "filename": report["filename"],
+    }
+
+    for name in (
+        "from",
+        "sender",
+        "x_sender",
+        "to",
+        "cc",
+        "bcc",
+        "envelope_to",
+        "delivered_to",
+        "return_path",
+        "subject",
+        "date",
+        "user_agent",
+        "x_mailer",
+        "x_originating_ip",
+    ):
+        if headers.get(name) not in (None, [], ""):
+            output[name] = headers[name]
+
+    output.update(
+        {
+            "relays": ordered_unique(
+                hop.get("from") for hop in relays["hops"] if hop.get("from")
+            ),
+            "relay_ips": relays["ips"],
+            "spf": compact_authentication(authentication["spf"]),
+            "dkim": compact_authentication(authentication["dkim"]),
+            "dmarc": compact_authentication(authentication["dmarc"]),
+            "urls": indicators["urls"],
+            "domains": indicators["domains"],
+            "attachments": indicators["attachments"],
+        }
+    )
+    return output
+
+
+def write_report(
+    report: dict[str, Any], destination: str | None, verbose: bool = False
+) -> None:
+    """Write a JSON report to stdout or to the selected file."""
+    output = report if verbose else compact_report(report)
+    serialized = json.dumps(output, ensure_ascii=False, indent=2)
+    if destination:
+        Path(destination).write_text(serialized + "\n", encoding="utf-8")
+        print(f"[!] Output saved in: {destination}", file=sys.stderr)
+    else:
+        print(serialized)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line argument parser."""
+    parser = argparse.ArgumentParser(
+        description="Extract SOC-relevant indicators from an EML or Outlook MSG."
+    )
+    parser.add_argument("filename", help="EML or MSG file to analyze")
+    parser.add_argument(
+        "-x",
+        "--exclude-private-ip",
+        action="store_true",
+        help="Exclude non-global IPs from the relay indicator list",
+    )
+    parser.add_argument(
+        "--offline-auth",
+        action="store_true",
+        help="Do not query DNS; only report authentication evidence from headers",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Emit the complete diagnostic report instead of the concise SOC view",
+    )
+    parser.add_argument("-o", "--output", help="Write the JSON report to this file")
+    parser.add_argument(
+        "--max-size-mb",
+        type=int,
+        default=DEFAULT_MAX_SIZE_MB,
+        help=f"Maximum accepted input size (default: {DEFAULT_MAX_SIZE_MB} MiB)",
+    )
+    parser.add_argument(
+        "-v", "--version", action="version", version=f"%(prog)s {VERSION}"
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the Meioc command-line interface."""
+    arguments = build_parser().parse_args(argv)
+    if arguments.max_size_mb <= 0:
+        print("meioc: error: --max-size-mb must be positive", file=sys.stderr)
+        return 2
+    try:
+        report = analyze_file(
+            arguments.filename,
+            exclude_private_ip=arguments.exclude_private_ip,
+            online_auth=not arguments.offline_auth,
+            max_size_mb=arguments.max_size_mb,
+        )
+        write_report(report, arguments.output, verbose=arguments.verbose)
+    except (OSError, ValueError) as error:
+        print(f"meioc: error: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
