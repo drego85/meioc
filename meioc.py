@@ -25,13 +25,15 @@ from bs4 import BeautifulSoup
 from dns_backend import (
     DNSLookupError,
     dkim_dns_lookup,
+    domain_exists,
     mx_dns_hosts,
     spf_dns_lookup,
     txt_dns_records,
 )
+from dmarc_policy import PolicyResolver, parse_policy
 
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 DEFAULT_MAX_SIZE_MB = 50
 DNS_TIMEOUT_SECONDS = 10
 MSG_COMPOUND_FILE_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
@@ -831,49 +833,17 @@ def online_authentication(
     }
 
 
-def find_dmarc_record(header_from: str) -> tuple[str | None, str]:
-    """Discover the DMARC record at the author or organizational domain."""
-    organizational = organizational_domain(header_from) or header_from
-    candidates = ordered_unique([header_from, organizational])
-    for candidate in candidates:
-        records = txt_dns_records(f"_dmarc.{candidate}", DNS_TIMEOUT_SECONDS)
-        dmarc_records = [
-            value.decode("ascii", errors="replace")
-            for value in records
-            if value.lstrip().lower().startswith(b"v=dmarc1")
-        ]
-        if len(dmarc_records) > 1:
-            raise ValueError(f"Multiple DMARC records found at {candidate}")
-        if dmarc_records:
-            return dmarc_records[0], candidate
-    return None, organizational
+def find_dmarc_record(
+    header_from: str, resolver: PolicyResolver | None = None
+) -> tuple[str | None, str]:
+    """Discover RFC 9989 policy using a shared bounded DNS tree walk."""
+    resolver = resolver or PolicyResolver(txt_dns_records, domain_exists, DNS_TIMEOUT_SECONDS)
+    return resolver.discover(header_from)
 
 
 def parse_dmarc_tags(record: str) -> dict[str, str]:
-    """Validate the RFC 7489 policy and alignment tags used by this evaluator."""
-    tags = {}
-    for field in record.split(";"):
-        if not field.strip():
-            continue
-        if "=" not in field:
-            raise ValueError("Malformed DMARC tag")
-        name, value = field.split("=", 1)
-        name, value = name.strip().lower(), value.strip()
-        if name in tags:
-            raise ValueError(f"Duplicate DMARC tag: {name}")
-        tags[name] = value
-    if next(iter(tags), None) != "v" or tags.get("v") != "DMARC1":
-        raise ValueError("DMARC version must be the first tag and equal DMARC1")
-    if tags.get("p") not in {"none", "quarantine", "reject"}:
-        raise ValueError("Invalid or missing DMARC policy")
-    for name, allowed in (
-        ("sp", {"none", "quarantine", "reject"}),
-        ("aspf", {"r", "s"}),
-        ("adkim", {"r", "s"}),
-    ):
-        if name in tags and tags[name] not in allowed:
-            raise ValueError(f"Invalid DMARC {name} value")
-    return tags
+    """Return RFC 9989 tags after defaults and recoverable-error handling."""
+    return parse_policy(record)[0]
 
 
 def verify_dmarc_online(
@@ -881,37 +851,79 @@ def verify_dmarc_online(
 ) -> dict[str, Any]:
     """Evaluate DMARC using independently verified aligned identifiers."""
     header_from = mailbox_domain(extract_single_address(message.get("From")))
-    if not header_from:
+    if (
+        not header_from or len(message.get_all("From", [])) != 1
+        or len(extract_addresses(message.get_all("From", []))) != 1
+    ):
         return {
             "result": "not_available",
             "source": "message",
             "independent": True,
             "reason": "A valid RFC 5322 From domain is required.",
         }
+    resolver = PolicyResolver(txt_dns_records, domain_exists, DNS_TIMEOUT_SECONDS)
     try:
-        record, policy_domain = find_dmarc_record(header_from)
+        record, policy_domain = find_dmarc_record(header_from, resolver)
     except DNSLookupError as error:
         return dmarc_error("temperror", header_from, str(error))
     except ValueError as error:
         return dmarc_error("permerror", header_from, str(error))
     if record is None:
-        return dmarc_no_record(header_from)
+        result = dmarc_no_record(header_from)
+        result.update(standard="RFC9989", warnings=resolver.warnings, queries=resolver.queries)
+        return result
 
     try:
         tags = parse_dmarc_tags(record)
+        resolver.cache[policy_domain] = (record, tags)
+        policy, effective_policy = resolver.effective_policy(header_from, policy_domain, tags)
+        spf_domain = mailbox_domain(spf_result.get("identity", {}).get("mail_from"))
+        if str(message.get("Return-Path", "")).strip() == "<>":
+            spf_domain = mailbox_domain(spf_result.get("identity", {}).get("helo"))
+        # Do not reuse PSL alignment or a different signature's verification.
+        alignment_errors = []
+
+        def assess(identity_domain, verified, mode):
+            strict = bool(identity_domain and identity_domain == header_from)
+            relaxed = strict
+            if verified and not strict and mode == "r":
+                try:
+                    relaxed = resolver.aligned(identity_domain, header_from, mode)
+                except DNSLookupError as error:
+                    alignment_errors.append(str(error))
+                    relaxed = None
+            return {
+                "identity_domain": identity_domain, "header_from_domain": header_from,
+                "strict": strict, "relaxed": relaxed, "basis": "dns-tree",
+            }
+
+        spf_result["alignment"] = assess(spf_domain, spf_result.get("authenticated"), tags["aspf"])
+        spf_pass = bool(spf_result.get("authenticated") and spf_result["alignment"][
+            "strict" if tags["aspf"] == "s" else "relaxed"
+        ])
+        dkim_pass = False
+        for signature in dkim_result.get("signatures", []):
+            signature["alignment"] = assess(
+                mailbox_domain(signature.get("domain")), signature.get("verified"), tags["adkim"]
+            )
+            dkim_pass |= bool(signature.get("verified") and signature["alignment"][
+                "strict" if tags["adkim"] == "s" else "relaxed"
+            ])
+        dkim_result["alignment"] = {
+            "header_from_domain": header_from, "basis": "dns-tree",
+            "strict": any(item["alignment"]["strict"] for item in dkim_result.get("signatures", [])),
+            "relaxed": any(item["alignment"]["relaxed"] for item in dkim_result.get("signatures", [])),
+        }
+        if alignment_errors and not (spf_pass or dkim_pass):
+            raise DNSLookupError("; ".join(alignment_errors))
+        # Do not start additional DNS walks solely to populate diagnostics.
+        author_org = resolver.organizations.get(header_from)
+    except DNSLookupError as error:
+        return dmarc_error("temperror", header_from, str(error))
     except ValueError as error:
         return dmarc_error("permerror", header_from, str(error))
     spf_mode = "strict" if tags.get("aspf") == "s" else "relaxed"
     dkim_mode = "strict" if tags.get("adkim") == "s" else "relaxed"
-    spf_pass = bool(
-        spf_result.get("authenticated")
-        and spf_result.get("alignment", {}).get(spf_mode)
-    )
-    dkim_pass = any(
-        signature.get("verified")
-        and signature.get("alignment", {}).get(dkim_mode)
-        for signature in dkim_result.get("signatures", [])
-    )
     if not (spf_pass or dkim_pass):
         if spf_result.get("result") == "temperror" or dkim_result.get("result") == "temperror":
             return dmarc_error("temperror", header_from, "Authentication DNS lookup failed.")
@@ -924,10 +936,15 @@ def verify_dmarc_online(
         "source": "dns",
         "independent": True,
         "header_from_domain": header_from,
-        "organizational_domain": organizational_domain(header_from),
+        "organizational_domain": author_org,
         "policy_domain": policy_domain,
         "record": record,
-        "policy": tags.get("sp", tags["p"]) if policy_domain != header_from else tags["p"],
+        "standard": "RFC9989",
+        "policy": policy,
+        "effective_policy": effective_policy,
+        "test_mode": tags["t"] == "y",
+        "warnings": resolver.warnings,
+        "queries": resolver.queries,
         "alignment_mode": {"spf": spf_mode, "dkim": dkim_mode},
         "aligned_via": [
             method for method, passed in (("spf", spf_pass), ("dkim", dkim_pass))
@@ -943,7 +960,7 @@ def dmarc_no_record(header_from: str) -> dict[str, Any]:
         "source": "dns",
         "independent": True,
         "header_from_domain": header_from,
-        "organizational_domain": organizational_domain(header_from),
+        "organizational_domain": None,
         "record": None,
         "reason": "No DMARC record was found.",
     }
@@ -956,7 +973,8 @@ def dmarc_error(result: str, header_from: str, reason: str) -> dict[str, Any]:
         "source": "dns",
         "independent": True,
         "header_from_domain": header_from,
-        "organizational_domain": organizational_domain(header_from),
+        "organizational_domain": None,
+        "standard": "RFC9989",
         "reason": reason,
     }
 

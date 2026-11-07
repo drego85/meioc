@@ -25,7 +25,7 @@ Homepage = "https://github.com/drego85/meioc"
 meioc = "meioc:main"
 
 [tool.setuptools]
-py-modules = ["meioc", "dns_backend"]
+py-modules = ["meioc", "dns_backend", "dmarc_policy"]
 
 [tool.setuptools.dynamic]
 version = {attr = "meioc.VERSION"}

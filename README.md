@@ -1,6 +1,6 @@
 # Meioc
 
-![Version](https://img.shields.io/badge/version-2.1-blue)
+![Version](https://img.shields.io/badge/version-2.2-blue)
 ![GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen)
 
@@ -60,14 +60,19 @@ SPF and DMARC can still be evaluated when the MSG retains usable transport
 headers such as `Received` and `Return-Path`; otherwise they are reported as
 unavailable.
 
-DMARC is evaluated independently by discovering the author-domain or
-PSL-derived organizational-domain policy. DMARC passes only when SPF passes and
-is aligned, or when the same DKIM signature both verifies and is aligned.
-The current evaluator follows the RFC 7489 policy/PSL model; migration to RFC
-9989 policy discovery is not implemented. Invalid policy/alignment values and
-duplicate tags produce `permerror`. A temporary authentication DNS failure is
-preserved as `temperror` when no other aligned method passes; incomplete evidence
-is reported as `not_available`.
+DMARC policy evaluation follows [RFC 9989](https://www.rfc-editor.org/rfc/rfc9989.html).
+The dedicated `dmarc_policy.py` module uses bounded DNS tree walks, cached per
+analysis, for policy discovery and authenticated identifier alignment. It handles
+`psd`, inherited `sp`/`np`, optional `p`, recoverable tag errors, and test mode `t`.
+The verbose report distinguishes the published policy from its effective test-mode
+policy and includes discovery queries and warnings. Unknown/obsolete tags are
+ignored. DNS errors remain indeterminate unless another aligned method passes.
+NODATA and NXDOMAIN are distinguished when selecting `np`.
+
+Meioc evaluates evidence and policies; it does not deliver mail or generate DMARC
+reports. Reconstructed SPF is scoped to the selected SMTP session and may differ
+from the final receiver's reported result. Offline alignment remains a PSL-based
+diagnostic, without independent DMARC DNS evaluation.
 
 The `reported` object contains evidence copied from `Authentication-Results` or
 `Received-SPF`. It is deliberately marked separately from the independent DNS

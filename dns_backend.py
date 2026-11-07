@@ -14,6 +14,10 @@ class DNSLookupError(RuntimeError):
     """Raised when every configured recursive resolver fails."""
 
 
+class DNSNameNotFound(DNSLookupError):
+    """Distinguish NXDOMAIN from an existing name with no requested records."""
+
+
 def validated_dns_response(request: DNSRecord, packet: bytes) -> DNSRecord:
     """Reject replies that do not match this DNS transaction and question."""
     response = DNSRecord.parse(packet)
@@ -71,7 +75,9 @@ def send_dns_request(request: DNSRecord, nameserver: str, timeout: float) -> DNS
     return response
 
 
-def resolve_records(name: str, qtype: str, timeout: float) -> list[Any]:
+def resolve_records(
+    name: str, qtype: str, timeout: float, raise_on_nxdomain: bool = False
+) -> list[Any]:
     """Resolve records through system nameservers within an overall deadline."""
     nameservers = configured_nameservers()
     if not nameservers:
@@ -88,11 +94,15 @@ def resolve_records(name: str, qtype: str, timeout: float) -> list[Any]:
         try:
             response = send_dns_request(request, nameserver, attempt_timeout)
             if response.header.rcode == RCODE.NXDOMAIN:
+                if raise_on_nxdomain:
+                    raise DNSNameNotFound(name)
                 return []
             if response.header.rcode != RCODE.NOERROR:
                 errors.append(f"{nameserver}: {RCODE[response.header.rcode]}")
                 continue
             return list(response.rr) + list(response.auth) + list(response.ar)
+        except DNSNameNotFound:
+            raise
         except (DNSLookupError, DNSError, OSError, ValueError) as error:
             errors.append(f"{nameserver}: {error}")
     detail = "; ".join(errors) or "deadline exceeded"
@@ -170,3 +180,12 @@ def dkim_dns_lookup(name: bytes, timeout: float = 10) -> bytes | None:
     """Return the first TXT key record in the format expected by dkimpy."""
     records = txt_dns_records(name.decode("ascii"), timeout)
     return records[0] if records else None
+
+
+def domain_exists(name: str, timeout: float = 10) -> bool:
+    """Treat NODATA as existence and only NXDOMAIN as non-existence."""
+    try:
+        resolve_records(name, "A", timeout, raise_on_nxdomain=True)
+        return True
+    except DNSNameNotFound:
+        return False

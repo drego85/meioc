@@ -185,6 +185,9 @@ class RelayAndAuthenticationTests(unittest.TestCase):
         self.mx_lookup = patch.object(meioc, "mx_dns_hosts", return_value=[])
         self.mx_lookup.start()
         self.addCleanup(self.mx_lookup.stop)
+        self.txt_lookup = patch.object(meioc, "txt_dns_records", return_value=[])
+        self.txt_lookup.start()
+        self.addCleanup(self.txt_lookup.stop)
 
     def test_received_ipv6_trailing_compression_is_preserved(self):
         for source in (
@@ -198,8 +201,7 @@ class RelayAndAuthenticationTests(unittest.TestCase):
     def test_invalid_dmarc_policy_tags_are_rejected(self):
         message = parse_message(b"From: sender@example.org\r\n\r\n")
         for record in (
-            "v=DMARC1; p=invalid", "v=DMARC1; p=reject; aspf=invalid",
-            "v=DMARC1; p=reject; adkim=invalid", "v=DMARC1; p=reject; sp=invalid",
+            "v=DMARC1; p=invalid", "v=DMARC1; p=reject; sp=invalid",
             "v=DMARC1; p=none; p=reject", "p=none; v=DMARC1",
         ):
             with self.subTest(record=record), patch.object(
@@ -614,6 +616,7 @@ class RelayAndAuthenticationTests(unittest.TestCase):
         )
         spf_result = {
             "authenticated": True,
+            "identity": {"mail_from": "sender@example.org"},
             "alignment": {"strict": True, "relaxed": True},
         }
         dkim_result = {"signatures": []}
@@ -636,8 +639,8 @@ class RelayAndAuthenticationTests(unittest.TestCase):
         }
         dkim_result = {
             "signatures": [
-                {"verified": True, "alignment": {"relaxed": False}},
-                {"verified": False, "alignment": {"relaxed": True}},
+                {"verified": True, "domain": "other.example", "alignment": {"relaxed": False}},
+                {"verified": False, "domain": "example.org", "alignment": {"relaxed": True}},
             ]
         }
         with patch.object(
@@ -693,6 +696,26 @@ class IndicatorTests(unittest.TestCase):
 
 
 class LocalCorpusTests(unittest.TestCase):
+    def test_local_corpus_indicators_survive_dmarc_evaluation(self):
+        corpus = Path(__file__).parents[1] / "sourceemail"
+        samples = sorted(list(corpus.glob("*.eml")) + list(corpus.glob("*.msg")))
+        if not samples:
+            self.skipTest("Local corpus is not present")
+        for sample in samples:
+            with self.subTest(sample=sample.name):
+                baseline = meioc.analyze_file(str(sample), online_auth=False)
+                spf = {"result": "fail", "authenticated": False, "identity": {}}
+                with patch.object(meioc, "verify_spf_online", return_value=spf), patch.object(
+                    meioc, "verify_dkim_online", return_value={"result": "none", "signatures": []}
+                ), patch.object(
+                    meioc, "txt_dns_records", return_value=[b"v=DMARC1; p=reject; psd=n"]
+                ):
+                    report = meioc.analyze_file(str(sample), online_auth=True)
+                self.assertEqual(report["indicators"], baseline["indicators"])
+                self.assertEqual(report["relays"], baseline["relays"])
+                self.assertIn(report["authentication"]["dmarc"]["result"],
+                              {"fail", "not_available"})
+
     def test_optional_local_corpus_parses_without_network(self):
         corpus = Path(__file__).parents[1] / "sourceemail"
         samples = sorted(corpus.glob("*.eml"))

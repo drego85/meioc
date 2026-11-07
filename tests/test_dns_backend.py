@@ -3,12 +3,22 @@
 import unittest
 from unittest.mock import patch
 
-from dnslib import DNSRecord
+from dnslib import DNSRecord, RCODE
 
 import dns_backend
 
 
 class DNSResponseTests(unittest.TestCase):
+    def test_domain_nodata_exists_but_nxdomain_does_not(self):
+        for rcode, expected in ((RCODE.NOERROR, True), (RCODE.NXDOMAIN, False)):
+            with self.subTest(rcode=rcode), patch.object(
+                dns_backend, "configured_nameservers", return_value=["127.0.0.1"]
+            ), patch.object(dns_backend, "send_dns_request") as send:
+                reply = DNSRecord.question("example.org").reply()
+                reply.header.rcode = rcode
+                send.return_value = reply
+                self.assertEqual(dns_backend.domain_exists("example.org"), expected)
+
     def test_matching_reply_is_accepted(self):
         request = DNSRecord.question("example.org", "TXT")
         self.assertEqual(
