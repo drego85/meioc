@@ -866,6 +866,13 @@ def verify_dmarc_online(
         and signature.get("alignment", {}).get(dkim_mode)
         for signature in dkim_result.get("signatures", [])
     )
+    if not (spf_pass or dkim_pass):
+        if spf_result.get("result") == "temperror" or dkim_result.get("result") == "temperror":
+            return dmarc_error("temperror", header_from, "Authentication DNS lookup failed.")
+        if spf_result.get("result") in {"not_available", "not_verifiable"} or dkim_result.get(
+            "result"
+        ) == "not_verifiable":
+            return dmarc_error("not_available", header_from, "Authentication evidence is incomplete.")
     return {
         "result": "pass" if spf_pass or dkim_pass else "fail",
         "source": "dns",

@@ -151,6 +151,17 @@ class ParsingTests(unittest.TestCase):
 
 
 class RelayAndAuthenticationTests(unittest.TestCase):
+    def test_dmarc_preserves_authentication_uncertainty(self):
+        message = parse_message(b"From: sender@example.org\r\n\r\n")
+        with patch.object(meioc, "find_dmarc_record", return_value=(
+            "v=DMARC1; p=reject", "example.org"
+        )):
+            for status, expected in (("temperror", "temperror"), ("not_available", "not_available")):
+                result = meioc.verify_dmarc_online(
+                    message, {"result": status}, {"result": "none", "signatures": []}
+                )
+                self.assertEqual(result["result"], expected)
+
     def test_authentication_properties_belong_to_the_selected_method(self):
         message = parse_message(
             b"Authentication-Results: mx.example; spf=pass smtp.mailfrom=bounce.example; "
