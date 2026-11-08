@@ -151,6 +151,66 @@ class ParsingTests(unittest.TestCase):
 
 
 class RelayAndAuthenticationTests(unittest.TestCase):
+    def test_spf_receiver_comments_bind_mailfrom_to_ingress(self):
+        for result, prose in (
+            ("pass", "designates 40.107.200.81 as permitted sender"),
+            ("fail", "does not designate 40.107.200.81 as permitted sender"),
+            ("none", "has no SPF policy when checking 40.107.200.81"),
+        ):
+            with self.subTest(result=result):
+                message = parse_message((
+                    "Received: from sender.example (40.107.200.81) by mta.mx.example.net\r\n"
+                    "Authentication-Results: mx.example.net;\r\n"
+                    f" spf={result} (mx.example.net: domain of bounce@sender.example {prose})\r\n"
+                    " smtp.mailfrom=bounce@sender.example; dkim=none\r\n\r\n"
+                ).encode())
+                reported = meioc.parse_authentication_result(message, "spf")
+                self.assertEqual(reported["client_ip"], "40.107.200.81")
+                self.assertEqual(reported["client_ip_source"], "comment")
+                identity = meioc.extract_reported_identity(message)
+                self.assertEqual(identity["mail_from"], "bounce@sender.example")
+                self.assertEqual(identity["client_ip"], "40.107.200.81")
+                with patch.object(meioc, "mx_dns_hosts", return_value=["mta.mx.example.net"]):
+                    message["To"] = "user@recipient.example"
+                    ingress = meioc.extract_recipient_mx_identity(message)
+                self.assertEqual(ingress["mail_from"], "bounce@sender.example")
+
+    def test_spf_comment_rejects_unrelated_or_conflicting_evidence(self):
+        valid = ("(mx.example: domain of bounce@example.org "
+                 "designates 40.107.200.81 as permitted sender)")
+        for segment in (
+            valid.replace("mx.example:", "other.example:"),
+            valid.replace("bounce@example.org", "other@example.org"),
+            valid.replace("40.107.200.81", "999.1.1.1"),
+            valid + " client-ip=85.159.115.48",
+            valid + valid.replace("40.107.200.81", "85.159.115.48"),
+            "(an arbitrary IP 40.107.200.81 appears here)",
+        ):
+            with self.subTest(segment=segment):
+                self.assertEqual(
+                    meioc.spf_client_ip(segment, "bounce@example.org", "mx.example"),
+                    (None, None),
+                )
+
+    def test_spf_comment_must_match_the_receiving_hop(self):
+        message = parse_message(
+            b"Received: from sender.example (40.107.200.81) by unrelated.example\r\n"
+            b"Authentication-Results: mx.example; spf=pass "
+            b"(mx.example: domain of bounce@example.org designates 40.107.200.81 "
+            b"as permitted sender) smtp.mailfrom=bounce@example.org\r\n\r\n"
+        )
+        self.assertIsNone(meioc.extract_reported_identity(message)["mail_from"])
+
+    def test_spf_comment_does_not_override_repeated_ip_ambiguity(self):
+        message = parse_message(
+            b"Received: from sender.example (40.107.200.81) by mx.example\r\n"
+            b"Received: from sender.example (40.107.200.81) by mx.example\r\n"
+            b"Authentication-Results: mx.example; spf=pass "
+            b"(mx.example: domain of bounce@example.org designates 40.107.200.81 "
+            b"as permitted sender) smtp.mailfrom=bounce@example.org\r\n\r\n"
+        )
+        self.assertIsNone(meioc.extract_reported_identity(message)["mail_from"])
+
     def test_spf_scope_distinguishes_mailfrom_helo_and_null_sender(self):
         fake_spf = types.ModuleType("spf")
         fake_spf.DNSLookup = object()

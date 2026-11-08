@@ -51,6 +51,13 @@ Recipient discovery uses the first available header group in this order:
 aid, not proof of the historical route. The verbose report identifies the chosen
 session and any missing evidence.
 
+Receiver SPF prose such as MXFilter's `domain of ... designates ...` and
+`has no SPF policy when checking ...` is accepted as SMTP identity evidence
+when it matches the MAIL FROM property, authentication service, and a unique
+Received source session. Conflicting IPs or envelope identities remain
+unavailable. Meioc then evaluates SPF using current DNS independently of the
+receiver's reported pass/fail result.
+
 Authentication and alignment are reported separately. A message can therefore
 have `authenticated: false` while still having strict or relaxed alignment when
 the unauthenticated `MAIL FROM` domain matches the visible `From` domain.

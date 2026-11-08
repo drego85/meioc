@@ -57,6 +57,12 @@ SMTP_MAILFROM_PATTERN = re.compile(
     r"smtp\.mailfrom\s*=\s*<?([^;>\s]+)", re.IGNORECASE
 )
 CLIENT_IP_PATTERN = re.compile(r"client-ip\s*=\s*([^;\s]+)", re.IGNORECASE)
+SPF_COMMENT_PATTERN = re.compile(
+    r"\((?P<receiver>[A-Za-z0-9_.-]+):\s*domain of\s+(?P<sender>[^\s()]+)\s+"
+    r"(?:(?:designates|does not designate)\s+(?P<designated>[^\s()]+)\s+as permitted sender"
+    r"|has no SPF policy when checking\s+(?P<checked>[^\s()]+))\)",
+    re.IGNORECASE,
+)
 HEADER_D_PATTERN = re.compile(r"header\.d\s*=\s*([^;\s]+)", re.IGNORECASE)
 HEADER_FROM_PATTERN = re.compile(r"header\.from\s*=\s*([^;\s]+)", re.IGNORECASE)
 DKIM_TAG_PATTERN = re.compile(
@@ -369,11 +375,27 @@ def session_mail_from(message: Message, client_ip: str) -> str | None:
     )
     if occurrences != 1:
         return None
-    identities = {
-        candidate["mail_from"] for candidate in spf_report_candidates(message)
-        if candidate.get("client_ip", "") == client_ip and candidate.get("mail_from")
-        and candidate.get("identity") != "pra"
-    }
+    identities = set()
+    for candidate in spf_report_candidates(message):
+        if candidate.get("client_ip") != client_ip or not candidate.get("mail_from"):
+            continue
+        if candidate.get("identity") == "pra":
+            continue
+        if candidate.get("client_ip_source") == "comment":
+            authserv = (candidate.get("authserv_id") or "").split()[0].lower().rstrip(".")
+            receivers = [
+                infer_source_hostname(clauses["by"] or "")
+                for value in message.get_all("Received", [])
+                if client_ip in find_ip_addresses(
+                    (clauses := parse_received_header(str(value)))["from"] or ""
+                )
+            ]
+            if not any(receiver and (
+                receiver.lower().rstrip(".") == authserv
+                or receiver.lower().rstrip(".").endswith("." + authserv)
+            ) for receiver in receivers):
+                continue
+        identities.add(candidate["mail_from"])
     domains = {mailbox_domain(value) for value in identities}
     mailboxes = {value for value in identities if "@" in value}
     if len(domains) != 1 or len(mailboxes) > 1:
@@ -563,6 +585,31 @@ def normalize_smtp_mailbox(value: str | None) -> str | None:
     return (parsed or candidate).lower()
 
 
+def spf_client_ip(
+    segment: str, mail_from: str | None, authserv_id: str | None
+) -> tuple[str | None, str | None]:
+    """Read explicit client-ip or narrowly matched receiver SPF prose evidence."""
+    explicit = regex_value(CLIENT_IP_PATTERN, segment)
+    evidence = []
+    for match in SPF_COMMENT_PATTERN.finditer(segment):
+        if not authserv_id or match["receiver"].lower().rstrip(".") != (
+            authserv_id.split()[0].lower().rstrip(".")
+        ):
+            continue
+        if normalize_smtp_mailbox(match["sender"]) != mail_from:
+            continue
+        evidence.append(match["designated"] or match["checked"])
+    addresses = set()
+    try:
+        for value in ([explicit] if explicit else []) + evidence:
+            addresses.add(str(ipaddress.ip_address(value.strip("[]"))))
+    except ValueError:
+        return None, None
+    if len(addresses) != 1:
+        return None, None
+    return addresses.pop(), "property" if explicit else "comment"
+
+
 def spf_report_candidates(message: Message) -> list[dict[str, Any]]:
     """Return reported SPF results ranked by RFC 7208 identity relevance."""
     candidates: list[dict[str, Any]] = []
@@ -588,6 +635,7 @@ def spf_report_candidates(message: Message) -> list[dict[str, Any]]:
             else:
                 identity = None
             preference = {"mailfrom": 40, "helo": 30, None: 20, "pra": 10}[identity]
+            client_ip, ip_source = spf_client_ip(segment, mail_from, authserv_id)
             candidates.append(
                 {
                     "result": match.group(1).lower(),
@@ -598,7 +646,8 @@ def spf_report_candidates(message: Message) -> list[dict[str, Any]]:
                     "identity": identity,
                     "mail_from": mail_from,
                     "helo": helo,
-                    "client_ip": regex_value(CLIENT_IP_PATTERN, segment),
+                    "client_ip": client_ip,
+                    "client_ip_source": ip_source,
                     "header_domain": None,
                     "header_from": None,
                     "preference": preference,
