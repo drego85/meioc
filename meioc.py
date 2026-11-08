@@ -769,6 +769,13 @@ def offline_authentication(
     """Report authentication evidence without making DNS queries."""
     identity = extract_delivery_identity(message)
     spf_result = parse_authentication_result(message, "spf")
+    if spf_result is not None:
+        scope = spf_result.get("identity")
+        if scope in {"mailfrom", "helo"}:
+            spf_result["scope"] = scope
+            spf_result["domain"] = mailbox_domain(
+                spf_result.get("mail_from") if scope == "mailfrom" else spf_result.get("helo")
+            )
     if spf_result is None:
         spf_result = {
             "result": "not_available",
@@ -878,6 +885,8 @@ def verify_dmarc_online(
         resolver.cache[policy_domain] = (record, tags)
         policy, effective_policy = resolver.effective_policy(header_from, policy_domain, tags)
         spf_domain = mailbox_domain(spf_result.get("identity", {}).get("mail_from"))
+        if spf_result.get("scope") == "helo":
+            spf_domain = None
         if str(message.get("Return-Path", "")).strip() == "<>":
             spf_domain = mailbox_domain(spf_result.get("identity", {}).get("helo"))
         # Do not reuse PSL alignment or a different signature's verification.
@@ -1005,6 +1014,8 @@ def verify_spf_online(message: Message) -> dict[str, Any]:
     if not client_ip or not (mail_from or helo):
         return {
             "result": "not_available",
+            "scope": None,
+            "domain": None,
             "source": "dns",
             "independent": True,
             "identity": identity,
@@ -1012,6 +1023,11 @@ def verify_spf_online(message: Message) -> dict[str, Any]:
         }
 
     sender = mail_from or f"postmaster@{helo}"
+    null_reverse_path = str(message.get("Return-Path", "")).strip() == "<>"
+    assessment = {
+        "scope": "mailfrom" if mail_from or null_reverse_path else "helo",
+        "domain": mailbox_domain(mail_from or helo),
+    }
     original_lookup = spf.DNSLookup
     try:
         spf.DNSLookup = make_spf_dns_lookup(spf)
@@ -1024,6 +1040,7 @@ def verify_spf_online(message: Message) -> dict[str, Any]:
         )
         return {
             "result": result.lower(),
+            **assessment,
             "source": "dns",
             "independent": True,
             "identity": identity,
@@ -1032,6 +1049,7 @@ def verify_spf_online(message: Message) -> dict[str, Any]:
     except Exception as error:  # pyspf exposes resolver-specific exception types
         return {
             "result": "temperror",
+            **assessment,
             "source": "dns",
             "independent": True,
             "identity": identity,
@@ -1376,6 +1394,9 @@ def compact_alignment(authentication: dict[str, Any]) -> str:
 def compact_authentication(authentication: dict[str, Any]) -> dict[str, Any]:
     """Keep authentication outcome and alignment without diagnostic detail."""
     result = {"result": authentication.get("result", "not_available")}
+    if authentication.get("scope"):
+        result["scope"] = authentication["scope"]
+        result["domain"] = authentication.get("domain")
     if "alignment" in authentication:
         result["alignment"] = compact_alignment(authentication)
     policy = authentication.get("policy")

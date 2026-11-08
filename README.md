@@ -39,6 +39,13 @@ to the first global source IP at the receiving boundary. The complete RFC
 result is retained: `pass`, `fail`, `softfail`, `neutral`, `none`, `temperror`,
 or `permerror`.
 
+SPF reports include `scope` (`mailfrom` or `helo`) and the checked `domain`,
+including in compact output. A HELO result does not authenticate the visible
+From domain and is not used as MAIL FROM authentication by DMARC. An explicitly
+null Return-Path (`<>`) uses the RFC 7208 postmaster/HELO identity as `mailfrom`.
+When verification is unavailable, no checked identity is asserted. Offline
+reports label the identity only when explicitly present in the reported result.
+
 Recipient discovery uses the first available header group in this order:
 `Envelope-To`, `Delivered-To`, `To`, `Cc`. Current MX records are a reconstruction
 aid, not proof of the historical route. The verbose report identifies the chosen

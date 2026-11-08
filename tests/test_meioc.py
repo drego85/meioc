@@ -151,6 +151,44 @@ class ParsingTests(unittest.TestCase):
 
 
 class RelayAndAuthenticationTests(unittest.TestCase):
+    def test_spf_scope_distinguishes_mailfrom_helo_and_null_sender(self):
+        fake_spf = types.ModuleType("spf")
+        fake_spf.DNSLookup = object()
+        fake_spf.TempError = RuntimeError
+        fake_spf.check2 = lambda **kwargs: ("pass", "authorized")
+        for return_path, expected_scope, expected_domain in (
+            (b"Return-Path: <bounce@sender.example>\r\n", "mailfrom", "sender.example"),
+            (b"", "helo", "relay.example"),
+            (b"Return-Path: <>\r\n", "mailfrom", "relay.example"),
+        ):
+            with self.subTest(scope=expected_scope, path=return_path):
+                message = parse_message(
+                    return_path + b"Received: from relay.example (40.107.200.81) "
+                    b"by mx.example\r\nFrom: sender@sender.example\r\n\r\n"
+                )
+                with patch.dict(sys.modules, {"spf": fake_spf}):
+                    result = meioc.verify_spf_online(message)
+                self.assertEqual(result["scope"], expected_scope)
+                self.assertEqual(result["domain"], expected_domain)
+                compact = meioc.compact_authentication(result)
+                self.assertEqual(compact["scope"], expected_scope)
+                self.assertEqual(compact["domain"], expected_domain)
+
+    def test_helo_pass_is_not_mailfrom_authentication_for_dmarc(self):
+        message = parse_message(b"From: sender@example.org\r\n\r\n")
+        spf_result = {"result": "pass", "authenticated": True, "scope": "helo",
+                      "identity": {"helo": "example.org", "mail_from": None}}
+        with patch.object(meioc, "txt_dns_records", return_value=[b"v=DMARC1; psd=n"]):
+            result = meioc.verify_dmarc_online(message, spf_result, {"signatures": []})
+        self.assertEqual(result["result"], "fail")
+        self.assertEqual(result["aligned_via"], [])
+
+    def test_unavailable_spf_does_not_claim_a_checked_identity(self):
+        result = meioc.verify_spf_online(parse_message(b"From: sender@example.org\r\n\r\n"))
+        self.assertEqual(result["result"], "not_available")
+        self.assertIsNone(result["scope"])
+        self.assertNotIn("scope", meioc.compact_authentication(result))
+
     def test_repeated_ip_cannot_select_an_envelope_from_another_session(self):
         message = parse_message(
             b"Received: from relay.example (40.107.200.81) by final.example\r\n"
