@@ -123,6 +123,9 @@ meioc --version
 Python 3.10 or newer is required. Dependencies are declared once in
 `requirements.txt` and used by the package build. Both `meioc suspicious.eml`
 and `python3 meioc.py suspicious.eml` are supported.
+Use a fresh virtual environment when upgrading from an installation using
+Py3DNS: its `DNS` module can conflict with dnspython's `dns` module on
+case-insensitive filesystems.
 
 To build a wheel and source distribution:
 

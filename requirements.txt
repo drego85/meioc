@@ -1,4 +1,4 @@
-py3dns>=4.0.2,<5
+dnspython>=2.6.1,<3
 pyspf>=2.0.14,<3
 dkimpy>=1.1.8,<2
 dnslib>=0.9.26,<1
