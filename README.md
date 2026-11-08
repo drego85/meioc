@@ -1,12 +1,12 @@
 # Meioc
 
-![Version](https://img.shields.io/badge/version-2.2-blue)
+![Version](https://img.shields.io/badge/version-2.2.0-blue)
 ![GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen)
 
 **Meioc** (Mail Extractor IoC) analyzes RFC 5322 `.eml` messages and Microsoft
-Outlook `.msg` containers, and emits a deterministic JSON report for SOC and
-incident-response workflows.
+Outlook `.msg` containers and extracts indicators of compromise into JSON for
+SOC and threat-intelligence workflows.
 
 ## What it extracts
 
@@ -15,99 +15,22 @@ incident-response workflows.
 - ordinary HTTP, HTTPS, and FTP URLs (defanged URLs are intentionally ignored);
 - registrable domains derived from those URLs;
 - attachment name, media type, size, MD5, SHA-1, and SHA-256;
-- independent SPF and DKIM results obtained through DNS;
-- SPF/DKIM results reported by the receiving infrastructure, when present.
+- independent SPF, DKIM, and DMARC results using current DNS;
+- receiver-reported authentication results in verbose output, when present.
 
 Meioc does not extract email addresses from the message body or standalone IP
 addresses outside the `Received` chain.
 
-## Authentication model
+## Authentication
 
-Live DNS verification is enabled by default.
+- SPF, DKIM, and DMARC use live DNS by default.
+- Authentication and domain alignment are reported separately.
+- Current DNS results may differ from results recorded at delivery.
+- DKIM signatures in reconstructed MSG messages cannot be cryptographically verified.
+- Use `--verbose` for diagnostics and `--offline-auth` to disable DNS queries.
 
-For SPF, Meioc evaluates the SMTP envelope sender (`MAIL FROM`/`Return-Path`),
-not the visible `From` header. It resolves the recipient domain's current MX
-records and, when that edge is present in the `Received` chain, evaluates the
-IP that connected to the published MX, provided that the MAIL FROM identity is
-available in that hop or in SPF evidence explicitly bound to the same client IP.
-The final Return-Path is not assumed to describe an earlier SMTP session. If the
-selected MX session lacks envelope evidence, SPF is `not_available`. This prevents a downstream forwarding
-hop, such as an antispam gateway delivering into a mailbox provider, from being
-mistaken for the original sender. If the MX edge cannot be identified, Meioc
-falls back to the `client-ip` recorded by the receiving infrastructure and then
-to the first global source IP at the receiving boundary. The complete RFC
-result is retained: `pass`, `fail`, `softfail`, `neutral`, `none`, `temperror`,
-or `permerror`.
-
-SPF reports include `scope` (`mailfrom` or `helo`) and the checked `domain`,
-including in compact output. A HELO result does not authenticate the visible
-From domain and is not used as MAIL FROM authentication by DMARC. An explicitly
-null Return-Path (`<>`) uses the RFC 7208 postmaster/HELO identity as `mailfrom`.
-When verification is unavailable, no checked identity is asserted. Offline
-reports label the identity only when explicitly present in the reported result.
-
-Recipient discovery uses the first available header group in this order:
-`Envelope-To`, `Delivered-To`, `To`, `Cc`. Current MX records are a reconstruction
-aid, not proof of the historical route. The verbose report identifies the chosen
-session and any missing evidence.
-
-Receiver SPF prose such as MXFilter's `domain of ... designates ...` and
-`has no SPF policy when checking ...` is accepted as SMTP identity evidence
-when it matches the MAIL FROM property, authentication service, and a unique
-Received source session. Conflicting IPs or envelope identities remain
-unavailable. Meioc then evaluates SPF using current DNS independently of the
-receiver's reported pass/fail result.
-
-An `ESMTPA`/`ESMTPSA` submission followed only by local delivery is reported as
-SPF `not_available` with reason `authenticated_submission_only`. The client IP
-is not treated as the outbound relay. A newer external SMTP transfer remains
-eligible for SPF evaluation. The verbose report preserves the submission
-protocol, receiver, and client IP. SMTP AUTH does not imply SPF or DMARC pass;
-DMARC still requires aligned authentication, or reports incomplete evidence
-when no external session is available (and `none` if no policy applies).
-
-Authentication and alignment are reported separately. A message can therefore
-have `authenticated: false` while still having strict or relaxed alignment when
-the unauthenticated `MAIL FROM` domain matches the visible `From` domain.
-
-For DKIM, every `DKIM-Signature` is checked against the original, unmodified
-message bytes. The overall result is `pass` when at least one signature verifies;
-DNS uncertainty is preserved as `temperror` instead of being reported as a
-cryptographic failure.
-
-Outlook MSG containers do not necessarily preserve the original serialized MIME
-bytes. Meioc therefore never performs DKIM cryptographic verification on the
-reconstructed message: a preserved signature is reported as `not_verifiable`.
-SPF and DMARC can still be evaluated when the MSG retains usable transport
-headers such as `Received` and `Return-Path`; otherwise they are reported as
-unavailable.
-
-DMARC policy evaluation follows [RFC 9989](https://www.rfc-editor.org/rfc/rfc9989.html).
-The dedicated `dmarc_policy.py` module uses bounded DNS tree walks, cached per
-analysis, for policy discovery and authenticated identifier alignment. It handles
-`psd`, inherited `sp`/`np`, optional `p`, recoverable tag errors, and test mode `t`.
-The verbose report distinguishes the published policy from its effective test-mode
-policy and includes discovery queries and warnings. Unknown/obsolete tags are
-ignored. DNS errors remain indeterminate unless another aligned method passes.
-NODATA and NXDOMAIN are distinguished when selecting `np`.
-
-Meioc evaluates evidence and policies; it does not deliver mail or generate DMARC
-reports. Reconstructed SPF is scoped to the selected SMTP session and may differ
-from the final receiver's reported result. Offline alignment remains a PSL-based
-diagnostic, without independent DMARC DNS evaluation.
-
-The `reported` object contains evidence copied from `Authentication-Results` or
-`Received-SPF`. It is deliberately marked separately from the independent DNS
-check because such headers are trustworthy only when added by infrastructure
-under the analyst's control.
-
-DNS records can change after message delivery. For old messages, compare the
-current independent result with `reported`; a disagreement does not by itself
-prove that the original receiving system was wrong.
-
-Use `--offline-auth` to suppress DNS queries. In that mode, Meioc reports only
-header evidence and signature presence; it never labels an unverified signature
-as valid.
+See [authentication details](docs/authentication.md) for result interpretation
+and SMTP session reconstruction.
 
 ## Installation
 
@@ -120,61 +43,46 @@ python3 -m pip install .
 meioc --version
 ```
 
-Python 3.10 or newer is required. Dependencies are declared once in
-`requirements.txt` and used by the package build. Both `meioc suspicious.eml`
-and `python3 meioc.py suspicious.eml` are supported.
-Use a fresh virtual environment when upgrading from an installation using
-Py3DNS: its `DNS` module can conflict with dnspython's `dns` module on
-case-insensitive filesystems.
-
-To build a wheel and source distribution:
-
-```bash
-python3 -m pip install build
-python3 -m build
-```
-
-Local email samples in `sourceemail/` must never be committed or distributed.
-Package artifacts explicitly exclude email samples.
+Python 3.10 or newer is required. Use a fresh virtual environment when upgrading
+from older versions that used Py3DNS, to avoid DNS package conflicts.
+You can also run `python3 meioc.py` directly from the repository.
 
 ## Usage
 
-Run the default analysis, including live SPF and DKIM verification:
+Analyze an email with live SPF, DKIM, and DMARC verification:
 
 ```bash
-python3 meioc.py suspicious.eml
+meioc suspicious.eml
 ```
 
 MSG files use the same command and output format:
 
 ```bash
-python3 meioc.py suspicious.msg
+meioc suspicious.msg
 ```
 
 Write the JSON report to a file:
 
 ```bash
-python3 meioc.py suspicious.eml --output report.json
+meioc suspicious.eml --output report.json
 ```
 
-The default output is a concise SOC view. Use `--verbose` when the complete
-relay clauses, raw `Received` headers, authentication identities, DNS evidence,
-alignment flags, and diagnostic reasons are needed:
+Use `--verbose` for the full diagnostic report:
 
 ```bash
-python3 meioc.py suspicious.eml --verbose
+meioc suspicious.eml --verbose
 ```
 
 Analyze without DNS and exclude non-global relay IPs from the indicator list:
 
 ```bash
-python3 meioc.py suspicious.eml --offline-auth --exclude-private-ip
+meioc suspicious.eml --offline-auth --exclude-private-ip
 ```
 
 Options:
 
 - `-x`, `--exclude-private-ip`: keep only globally routable relay IP indicators;
-- `--offline-auth`: do not make SPF/DKIM DNS queries;
+- `--offline-auth`: disable DNS queries and report available header evidence;
 - `--verbose`: emit the complete diagnostic report instead of the concise view;
 - `-o`, `--output`: write JSON to the selected path;
 - `--max-size-mb`: reject messages above this size (default: 50 MiB);
@@ -195,7 +103,7 @@ diagnostic evidence:
   "to": ["analyst@example.net"],
   "relays": ["mail.example.org ([192.0.2.10])"],
   "relay_ips": ["192.0.2.10"],
-  "spf": {"result": "fail", "alignment": "strict"},
+  "spf": {"result": "fail", "scope": "mailfrom", "domain": "example.org", "alignment": "strict"},
   "dkim": {"result": "none", "alignment": "none"},
   "dmarc": {"result": "none"},
   "urls": ["https://example.org/login"],
@@ -208,104 +116,40 @@ Authentication remains distinct from alignment: `result: fail` with
 `alignment: strict` is valid and means the identifiers match but the sending IP
 was not authorized.
 
-## Verbose JSON schema v2
-
-With `--verbose`, version 2 groups all diagnostic values:
-
-```json
-{
-  "schema_version": 2,
-  "filename": "suspicious.eml",
-  "headers": {
-    "from": "sender@example.org",
-    "to": ["analyst@example.net"],
-    "return_path": "bounce@example.org"
-  },
-  "relays": {
-    "hops": [
-      {
-        "from": "mail.example.org ([192.0.2.10])",
-        "by": "mx.example.net",
-        "with": "ESMTP",
-        "ips": ["192.0.2.10"],
-        "raw": "from mail.example.org ... by mx.example.net ..."
-      }
-    ],
-    "ips": ["192.0.2.10"]
-  },
-  "authentication": {
-    "mode": "online",
-    "spf": {
-      "result": "pass",
-      "source": "dns",
-      "independent": true,
-      "authenticated": true,
-      "identity": {
-        "mail_from": "bounce@example.org",
-        "client_ip": "192.0.2.10",
-        "helo": "mail.example.org",
-        "source": "received"
-      },
-      "alignment": {
-        "identity_domain": "example.org",
-        "header_from_domain": "example.org",
-        "strict": true,
-        "relaxed": true
-      },
-      "reported": null
-    },
-    "dkim": {
-      "result": "pass",
-      "source": "dns",
-      "independent": true,
-      "authenticated": true,
-      "signatures": [
-        {
-          "domain": "example.org",
-          "selector": "mail",
-          "algorithm": "rsa-sha256",
-          "verified": true
-        }
-      ],
-      "alignment": {
-        "header_from_domain": "example.org",
-        "strict": true,
-        "relaxed": true
-      },
-      "reported": null
-    },
-    "dmarc": {
-      "result": "pass",
-      "source": "dns",
-      "independent": true,
-      "header_from_domain": "example.org",
-      "organizational_domain": "example.org",
-      "policy_domain": "example.org",
-      "policy": "reject",
-      "aligned_via": ["spf", "dkim"],
-      "reported": null
-    }
-  },
-  "indicators": {
-    "urls": ["https://example.org/login"],
-    "domains": ["example.org"],
-    "attachments": []
-  }
-}
-```
-
-Fields that are unavailable are represented by `null`, empty arrays, or an
-explicit authentication result such as `not_available`; a DNS error is reported
-as `temperror`, not collapsed into `false`.
-
-## Tests
+## Development
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-If the ignored local `sourceemail` directory is present, the suite also parses
-every `.eml` file in that corpus without performing network requests.
+Tests use synthetic fixtures and do not require network access. When available,
+the ignored `sourceemail/` directory adds local EML/MSG corpus checks. Never
+commit real email samples or include them in package artifacts.
+
+To build a wheel and source distribution:
+
+```bash
+python3 -m pip install build
+python3 -m build
+```
+
+## Contributing and Supporting the Project
+
+There are three ways you can contribute to the development of **meioc**:
+
+1. **Development Contributions**:
+
+   Please ensure that your code follows best practices and includes relevant tests.
+
+2. **Donation Support**:
+
+   If you find this project useful and would like to support its development, you can also make a donation via [Buy Me a Coffee](https://buymeacoffee.com/andreadraghetti). Your support is greatly appreciated and helps to keep this project going!
+
+   [![Buy Me a Coffee](https://img.shields.io/badge/-Buy%20Me%20a%20Coffee-orange?logo=buy-me-a-coffee&logoColor=white&style=flat-square)](https://buymeacoffee.com/andreadraghetti)
+
+3. **Share the Project**:
+
+   Sharing Meioc with colleagues, friends, and anyone interested in email analysis and threat intelligence helps the project grow and reach more practitioners in the community.
 
 ## License
 

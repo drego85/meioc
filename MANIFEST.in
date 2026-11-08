@@ -1,5 +1,6 @@
 include requirements.txt
 include LICENSE
+recursive-include docs *.md
 prune sourceemail
 prune tests
 global-exclude *.eml *.msg *.pyc
