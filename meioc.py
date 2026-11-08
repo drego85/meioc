@@ -341,6 +341,28 @@ def extract_delivery_identity(message: Message) -> dict[str, str | None]:
     }
 
 
+def submission_only_context(message: Message) -> dict[str, Any] | None:
+    """Identify a submission followed only by local delivery in the visible trace."""
+    for value in message.get_all("Received", []):
+        clauses = parse_received_header(" ".join(str(value).split()))
+        protocol = (clauses["with"] or "").split(" ", 1)[0].lower()
+        addresses = find_ip_addresses(clauses["from"] or "")
+        if protocol in {"esmtpa", "esmtpsa"}:
+            return {
+                "type": "authenticated_submission", "protocol": protocol,
+                "receiver": infer_source_hostname(clauses["by"] or ""),
+                "client_ip": addresses[0] if addresses else None,
+                "source": "received",
+            }
+        # A newer SMTP transfer with a global source takes precedence over any
+        # older authenticated submission. Local/LMTP/MAPI hops do not.
+        if protocol in {"smtp", "esmtp", "smtps", "esmtps"} and any(
+            ipaddress.ip_address(address).is_global for address in addresses
+        ):
+            return None
+    return None
+
+
 def recipient_domains(message: Message) -> list[str]:
     """Return recipient domains in SMTP-envelope then message-header order."""
     addresses = []
@@ -420,6 +442,8 @@ def extract_recipient_mx_identity(
     for raw_header in reversed(message.get_all("Received", [])):
         header = " ".join(str(raw_header).split())
         clauses = parse_received_header(header)
+        if (clauses["with"] or "").split(" ", 1)[0].lower() in {"esmtpa", "esmtpsa"}:
+            continue
         receiver = infer_source_hostname(clauses["by"] or "")
         if not receiver or receiver.lower() not in published_mx_hosts:
             continue
@@ -455,7 +479,10 @@ def extract_reported_identity(message: Message) -> dict[str, str | None] | None:
     received_ips = {
         ip
         for header in message.get_all("Received", [])
-        for ip in find_ip_addresses(parse_received_header(str(header))["from"] or "")
+        if ((clauses := parse_received_header(str(header)))["with"] or "").split(
+            " ", 1
+        )[0].lower() not in {"esmtpa", "esmtpsa"}
+        for ip in find_ip_addresses(clauses["from"] or "")
     }
     candidates = sorted(
         spf_report_candidates(message),
@@ -1051,6 +1078,16 @@ def make_spf_dns_lookup(spf_module: Any):
 def verify_spf_online(message: Message) -> dict[str, Any]:
     """Evaluate SPF for the receiving-boundary IP and MAIL FROM identity."""
     import spf
+    submission = submission_only_context(message)
+    if submission:
+        return {
+            "result": "not_available", "scope": None, "domain": None,
+            "source": "message", "independent": False,
+            "identity": {"mail_from": None, "client_ip": None, "helo": None,
+                         "source": "received"},
+            "transport": submission,
+            "reason": "authenticated_submission_only",
+        }
     try:
         identity = extract_recipient_mx_identity(message) or extract_delivery_identity(
             message
@@ -1443,6 +1480,8 @@ def compact_alignment(authentication: dict[str, Any]) -> str:
 def compact_authentication(authentication: dict[str, Any]) -> dict[str, Any]:
     """Keep authentication outcome and alignment without diagnostic detail."""
     result = {"result": authentication.get("result", "not_available")}
+    if authentication.get("reason") == "authenticated_submission_only":
+        result["reason"] = authentication["reason"]
     if authentication.get("scope"):
         result["scope"] = authentication["scope"]
         result["domain"] = authentication.get("domain")

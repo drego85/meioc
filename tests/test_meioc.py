@@ -151,6 +151,81 @@ class ParsingTests(unittest.TestCase):
 
 
 class RelayAndAuthenticationTests(unittest.TestCase):
+    def test_authenticated_submission_only_does_not_query_spf_or_mx(self):
+        for protocol in (b"ESMTPA", b"esmtpsa"):
+            message = parse_message(
+                b"Received: from mx.example by mx.example with LMTP\r\n"
+                b"Received: from client.example (81.57.112.161) by mx.example with "
+                + protocol + b" (TLS1.3)\r\n"
+                b"Return-Path: <sender@example.org>\r\nFrom: sender@example.org\r\n\r\n"
+            )
+            with patch.object(meioc, "extract_recipient_mx_identity") as mx:
+                result = meioc.verify_spf_online(message)
+            mx.assert_not_called()
+            self.assertEqual(meioc.compact_authentication(result), {
+                "result": "not_available", "reason": "authenticated_submission_only"
+            })
+            self.assertEqual(result["transport"]["client_ip"], "81.57.112.161")
+            with patch.object(meioc, "txt_dns_records", return_value=[b"v=DMARC1; psd=n"]):
+                dmarc = meioc.verify_dmarc_online(message, result, {"signatures": []})
+            self.assertEqual(dmarc["result"], "not_available")
+
+    def test_submission_does_not_hide_a_newer_external_smtp_transfer(self):
+        message = parse_message(
+            b"Received: from outbound.example (40.107.200.81) by mx.example with ESMTPS\r\n"
+            b"Received: from client.example (81.57.112.161) by outbound.example with ESMTPSA\r\n"
+            b"Received-SPF: pass; identity=mailfrom; client-ip=81.57.112.161; "
+            b"envelope-from=sender@example.org\r\n"
+            b"Return-Path: <sender@example.org>\r\n\r\n"
+        )
+        fake_spf = types.ModuleType("spf")
+        fake_spf.DNSLookup = object()
+        fake_spf.TempError = RuntimeError
+        calls = []
+        def check2(**kwargs):
+            calls.append(kwargs)
+            return "pass", "authorized"
+        fake_spf.check2 = check2
+        with patch.dict(sys.modules, {"spf": fake_spf}):
+            result = meioc.verify_spf_online(message)
+        self.assertEqual(result["result"], "pass")
+        self.assertEqual(calls[0]["i"], "40.107.200.81")
+
+    def test_mx_discovery_skips_older_authenticated_submission(self):
+        message = parse_message(
+            b"Received: from outbound.example (40.107.200.81) by mx.example with ESMTPS\r\n"
+            b"Received: from client.example (81.57.112.161) by mx.example with ESMTPSA\r\n"
+            b"To: user@example.org\r\n\r\n"
+        )
+        with patch.object(meioc, "mx_dns_hosts", return_value=["mx.example"]):
+            identity = meioc.extract_recipient_mx_identity(message)
+        self.assertEqual(identity["client_ip"], "40.107.200.81")
+
+    def test_tls_alone_and_local_generation_do_not_imply_smtp_auth(self):
+        for received in (
+            b"from relay.example (40.107.200.81) by mx.example with ESMTPS",
+            b"from user by mx.example with local (Exim)",
+            b"from mx.example by mx.example with LMTP",
+        ):
+            message = parse_message(b"Received: " + received + b"\r\n\r\n")
+            self.assertIsNone(meioc.submission_only_context(message))
+
+    def test_authenticated_submission_cannot_promote_dmarc_but_dkim_can(self):
+        message = parse_message(
+            b"Received: from client.example (81.57.112.161) by mx.example with ESMTPSA\r\n"
+            b"From: sender@example.org\r\n\r\n"
+        )
+        spf = meioc.verify_spf_online(message)
+        with patch.object(meioc, "txt_dns_records", return_value=[b"v=DMARC1; psd=n"]):
+            result = meioc.verify_dmarc_online(message, spf, {
+                "signatures": [{"verified": True, "domain": "example.org"}]
+            })
+        self.assertEqual(result["result"], "pass")
+        self.assertEqual(result["aligned_via"], ["dkim"])
+        with patch.object(meioc, "txt_dns_records", return_value=[]):
+            result = meioc.verify_dmarc_online(message, spf, {"signatures": []})
+        self.assertEqual(result["result"], "none")
+
     def test_spf_receiver_comments_bind_mailfrom_to_ingress(self):
         for result, prose in (
             ("pass", "designates 40.107.200.81 as permitted sender"),

@@ -58,6 +58,14 @@ Received source session. Conflicting IPs or envelope identities remain
 unavailable. Meioc then evaluates SPF using current DNS independently of the
 receiver's reported pass/fail result.
 
+An `ESMTPA`/`ESMTPSA` submission followed only by local delivery is reported as
+SPF `not_available` with reason `authenticated_submission_only`. The client IP
+is not treated as the outbound relay. A newer external SMTP transfer remains
+eligible for SPF evaluation. The verbose report preserves the submission
+protocol, receiver, and client IP. SMTP AUTH does not imply SPF or DMARC pass;
+DMARC still requires aligned authentication, or reports incomplete evidence
+when no external session is available (and `none` if no policy applies).
+
 Authentication and alignment are reported separately. A message can therefore
 have `authenticated: false` while still having strict or relaxed alignment when
 the unauthenticated `MAIL FROM` domain matches the visible `From` domain.
